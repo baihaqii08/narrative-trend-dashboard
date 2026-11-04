@@ -318,7 +318,7 @@ function Overview({ theme, isDark, timeFilter = 'all', setTimeFilter, platformFi
         ? overviewApiData.topTopics.slice(0, 4)
         : postsDerivedTopics;
 
-    const firstDbTopic = overviewApiData?.dominantTopic || (topTopicsData.length > 0 ? topTopicsData[0].title : 'Karhutla');
+    const firstDbTopic = overviewApiData?.dominantTopic || (topTopicsData.length > 0 ? topTopicsData[0].title : 'Program Makan Bergizi Gratis (MBG)');
 
     // Top Positive / Negative / Neutral Topic dari database
     const sortedPosTopics = Object.entries(posTopicCounts).sort((a, b) => b[1] - a[1]);
@@ -333,6 +333,8 @@ function Overview({ theme, isDark, timeFilter = 'all', setTimeFilter, platformFi
 
     const sortedNeuTopics = Object.entries(neuTopicCounts).sort((a, b) => b[1] - a[1]);
     const topNeutralTopic =
+      overviewApiData?.topNeutralTopic ||
+      (sortedNeuTopics.length > 0 ? sortedNeuTopics[0][0] : firstDbTopic);
       overviewApiData?.topNeutralTopic ||
       (sortedNeuTopics.length > 0 ? sortedNeuTopics[0][0] : firstDbTopic);
 
@@ -631,16 +633,16 @@ function Overview({ theme, isDark, timeFilter = 'all', setTimeFilter, platformFi
 
       const dominant = dominantSentiment;
       let dominantShare = neuShare;
-      let dominantTopic = topNeutralTopic || topPositiveTopic || 'Karhutla';
+      let dominantTopic = topNeutralTopic || topPositiveTopic || 'Program Makan Bergizi Gratis (MBG)';
       let prevShare = prevPeriodStats.neuShare;
 
       if (dominant === 'positive') {
         dominantShare = posShare;
-        dominantTopic = topPositiveTopic || 'Karhutla';
+        dominantTopic = topPositiveTopic || 'Program Makan Bergizi Gratis (MBG)';
         prevShare = prevPeriodStats.posShare;
       } else if (dominant === 'negative') {
         dominantShare = negShare;
-        dominantTopic = topNegativeTopic || 'Karhutla';
+        dominantTopic = topNegativeTopic || 'Program Makan Bergizi Gratis (MBG)';
         prevShare = prevPeriodStats.negShare;
       }
 
@@ -699,7 +701,7 @@ function Overview({ theme, isDark, timeFilter = 'all', setTimeFilter, platformFi
       return {
         dominant,
         dominantShare: dominantShare.toFixed(1),
-        dominantTopic: dayPayload.topPositiveTopic || topPositiveTopic || 'Karhutla',
+        dominantTopic: dayPayload.topPositiveTopic || topPositiveTopic || 'Program Makan Bergizi Gratis (MBG)',
         diff,
         badgeText: `${diff >= 0 ? '↑' : '↓'} ${Math.abs(diff).toFixed(1)}% vs. avg`,
         badgeBg: dominant === 'positive' ? '#dcfce7' : dominant === 'negative' ? '#fee2e2' : '#e2e8f0',
@@ -710,7 +712,7 @@ function Overview({ theme, isDark, timeFilter = 'all', setTimeFilter, platformFi
     return {
       dominant: dominantSentiment,
       dominantShare: neutralShare,
-      dominantTopic: topNeutralTopic || 'Karhutla',
+      dominantTopic: topNeutralTopic || 'Program Makan Bergizi Gratis (MBG)',
       diff: 0,
       badgeText: `${neutralShare}% share`,
       badgeBg: '#e2e8f0',
@@ -732,7 +734,7 @@ function Overview({ theme, isDark, timeFilter = 'all', setTimeFilter, platformFi
   // Dynamic banner configuration sesuai instruksi Backend (poin #3)
   const bannerConfig = useMemo(() => {
     const { dominant, dominantShare, dominantTopic, badgeText, badgeBg, badgeColor } = activeDominantStats;
-    const topicLabel = dominantTopic && dominantTopic !== '-' ? dominantTopic : 'Karhutla';
+    const topicLabel = dominantTopic && dominantTopic !== '-' ? dominantTopic : 'Program Makan Bergizi Gratis (MBG)';
 
     if (dominant === 'negative') {
       return {
@@ -788,7 +790,7 @@ function Overview({ theme, isDark, timeFilter = 'all', setTimeFilter, platformFi
           overviewApiData?.narrativeSummary ||
           (selectedDate
             ? `Percakapan seputar ${topicLabel} cenderung netral pada ${selectedDate} dengan proporsi ${dominantShare}%, didorong oleh diskusi informatif di media sosial.`
-            : `Percakapan seputar ${topicLabel} cenderung netral dan stabil dengan proporsi ${dominantShare}%, didorong oleh diskusi informatif dan berita pemadaman di media sosial.`),
+            : `Percakapan seputar ${topicLabel} cenderung netral dan stabil dengan proporsi ${dominantShare}%, didorong oleh diskusi informatif dan perkembangan terkini di media sosial.`),
         metricLabel: 'Neutral share',
         metricValue: `${dominantShare}%`,
         badgeText,

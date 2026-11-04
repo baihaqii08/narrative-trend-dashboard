@@ -1,6 +1,6 @@
 from fastapi import APIRouter, Depends, Query
 from sqlalchemy.orm import Session
-from sqlalchemy import or_, func, cast, Date
+from sqlalchemy import or_, func
 from typing import Optional, List, Dict, Any
 from datetime import datetime, timedelta
 
@@ -110,8 +110,9 @@ def get_sentiment_timeline(
     """
     filter_days = parse_filter_days(days, time_filter)
 
+    date_col = func.date(Post.posted_at).label("date")
     query = db.query(
-        cast(Post.posted_at, Date).label("date"),
+        date_col,
         Post.sentiment,
         func.count(Post.id).label("count")
     ).filter(Post.posted_at.isnot(None))
@@ -123,7 +124,7 @@ def get_sentiment_timeline(
     if platform and isinstance(platform, str) and platform.lower() != "all":
         query = query.filter(Post.platform == platform.lower())
 
-    stats = query.group_by(cast(Post.posted_at, Date), Post.sentiment).order_by(cast(Post.posted_at, Date)).all()
+    stats = query.group_by(date_col, Post.sentiment).order_by(date_col).all()
 
     timeline_dict: Dict[str, Dict[str, Any]] = {}
     for date_val, sent, count in stats:

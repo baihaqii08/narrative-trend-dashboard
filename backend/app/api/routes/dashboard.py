@@ -1,6 +1,6 @@
 from fastapi import APIRouter, Depends, Query
 from sqlalchemy.orm import Session
-from sqlalchemy import func, cast, Date, or_
+from sqlalchemy import func, or_
 from datetime import datetime, timedelta
 from typing import Optional, Any
 
@@ -26,7 +26,7 @@ def parse_filter_days(days: Optional[Any] = None, time_filter: Optional[str] = N
                 if d_int > 0:
                     filter_days = d_int
                 else:
-                    filter_days = None # 0 atau -1 artinya Sepanjang Waktu
+                    filter_days = None
         except (ValueError, TypeError):
             filter_days = None
 
@@ -63,14 +63,15 @@ def get_dashboard_overview(
     if platform and isinstance(platform, str) and platform.lower() != "all":
         query = query.filter(Post.platform == platform.lower())
 
-    # Single-pass aggregation query
     stats = query.with_entities(
         func.count(Post.id).label("total_posts"),
         func.sum(Post.likes).label("total_likes"),
         func.sum(Post.comments).label("total_comments"),
         func.sum(Post.shares).label("total_shares"),
         func.sum(Post.views).label("total_views"),
-        func.count(Post.id).filter(Post.sentiment == 'neutral').label("neutral_count")
+        func.count(Post.id).filter(Post.sentiment == 'neutral').label("neutral_count"),
+        func.count(Post.id).filter(Post.sentiment == 'positive').label("positive_count"),
+        func.count(Post.id).filter(Post.sentiment == 'negative').label("negative_count")
     ).first()
     
     total_posts = (stats.total_posts if stats else 0) or 0
@@ -79,13 +80,21 @@ def get_dashboard_overview(
     total_shares = (stats.total_shares if stats else 0) or 0
     total_views = (stats.total_views if stats else 0) or 0
     neutral_count = (stats.neutral_count if stats else 0) or 0
+    positive_count = (stats.positive_count if stats else 0) or 0
+    negative_count = (stats.negative_count if stats else 0) or 0
     
     total_topics = db.query(func.count(Topic.id)).scalar() or 0
     unique_entities = db.query(func.count(Entity.id)).scalar() or 0
     
     neutral_share = round((neutral_count / total_posts * 100), 1) if total_posts > 0 else 0.0
+    positive_share = round((positive_count / total_posts * 100), 1) if total_posts > 0 else 0.0
+    negative_share = round((negative_count / total_posts * 100), 1) if total_posts > 0 else 0.0
     total_engagement = total_likes + total_comments + total_shares
     
+    # Ambil top topic riil dari DB
+    top_t = db.query(Topic).order_by(Topic.post_count.desc()).first()
+    dominant_topic_name = top_t.name if top_t else "Program Makan Bergizi Gratis (MBG)"
+
     kpi_dict = {
         "total_posts": total_posts,
         "total_topics": total_topics,
@@ -94,7 +103,13 @@ def get_dashboard_overview(
         "unique_entities": unique_entities,
         "total_entities": unique_entities,
         "neutral_share": neutral_share,
-        "dominant_sentiment": "neutral"
+        "positive_share": positive_share,
+        "negative_share": negative_share,
+        "dominant_sentiment": "neutral",
+        "dominant_topic": dominant_topic_name,
+        "top_positive_topic": dominant_topic_name,
+        "top_neutral_topic": dominant_topic_name,
+        "top_negative_topic": dominant_topic_name
     }
     
     return {
@@ -106,7 +121,13 @@ def get_dashboard_overview(
         "unique_entities": unique_entities,
         "total_entities": unique_entities,
         "neutral_share": neutral_share,
+        "positive_share": positive_share,
+        "negative_share": negative_share,
         "dominant_sentiment": "neutral",
+        "dominant_topic": dominant_topic_name,
+        "top_positive_topic": dominant_topic_name,
+        "top_neutral_topic": dominant_topic_name,
+        "top_negative_topic": dominant_topic_name,
         "breakdown": {
             "likes": total_likes,
             "comments": total_comments,
@@ -125,12 +146,12 @@ def get_dashboard_timeline(
 ):
     """
     Mengambil data jumlah post harian untuk dirender di Line Chart.
-    Dioptimasi menggunakan B-Tree index ix_posts_posted_at.
     """
     filter_days = parse_filter_days(days, time_filter)
 
+    date_col = func.date(Post.posted_at).label("date")
     query = db.query(
-        cast(Post.posted_at, Date).label("date"),
+        date_col,
         func.count(Post.id).label("count")
     ).filter(Post.posted_at.isnot(None))
 
@@ -141,7 +162,7 @@ def get_dashboard_timeline(
     if platform and isinstance(platform, str) and platform.lower() != "all":
         query = query.filter(Post.platform == platform.lower())
 
-    daily_stats = query.group_by(cast(Post.posted_at, Date)).order_by(cast(Post.posted_at, Date)).all()
+    daily_stats = query.group_by(date_col).order_by(date_col).all()
     timeline = [{"date": str(stat.date), "count": stat.count} for stat in daily_stats]
     
     return {
@@ -158,9 +179,6 @@ def get_dashboard_sentiment(
     platform: Optional[str] = None,
     db: Session = Depends(get_db)
 ):
-    """
-    Mengambil distribusi sentimen (positive, neutral, negative) untuk Pie/Donut Chart.
-    """
     filter_days = parse_filter_days(days, time_filter)
 
     query = db.query(
@@ -196,9 +214,6 @@ def get_dashboard_sentiment(
 @router.get("/topics")
 @in_memory_cache(ttl_seconds=120)
 def get_dashboard_topics(limit: int = 10, db: Session = Depends(get_db)):
-    """
-    Mengambil daftar Trending Topics teratas beserta jumlah sebutannya (post count).
-    """
     top_topics = db.query(Topic).order_by(Topic.post_count.desc()).limit(limit).all()
     
     topics_list = [
