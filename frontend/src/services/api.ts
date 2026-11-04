@@ -201,10 +201,10 @@ export function normalizePostRecord(row: any): SocialPost {
   }
 
   const engagement = {
-    likes: Number(row.engagement?.likes ?? row.likes ?? 0),
-    shares: Number(row.engagement?.shares ?? row.shares ?? 0),
-    comments: Number(row.engagement?.comments ?? row.comments ?? 0),
-    views: Number(row.engagement?.views ?? row.views ?? 0)
+    likes: Number(row.engagement?.likes ?? row.likes ?? row.like_count ?? 0),
+    shares: Number(row.engagement?.shares ?? row.shares ?? row.retweets ?? row.reposts ?? row.retweet_count ?? 0),
+    comments: Number(row.engagement?.comments ?? row.comments ?? row.replies ?? row.reply_count ?? 0),
+    views: Number(row.engagement?.views ?? row.views ?? row.impressions ?? row.view_count ?? 0)
   };
 
   const topicName =
@@ -224,10 +224,10 @@ export function normalizePostRecord(row: any): SocialPost {
   return {
     id: row.id ?? row.platform_post_id ?? Math.random().toString(36).slice(2),
     platform: normalizePlatform(row.platform),
-    user_id: row.author_username || row.user_id || row.username || '@anonymous',
+    user_id: row.author_username || row.user_id || row.username || row.screen_name || row.author || '@anonymous',
     topic: String(topicName),
     topic_id: row.topic_id,
-    content: String(row.content || row.text || ''),
+    content: String(row.content || row.text || row.full_text || ''),
     sentiment,
     sentiment_score: row.sentiment_score !== undefined ? Number(row.sentiment_score) : undefined,
     entities: normalizedEntities,

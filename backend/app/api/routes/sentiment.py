@@ -7,14 +7,22 @@ from datetime import datetime, timedelta
 from app.api.dependencies import get_db
 from models import Post, Topic
 from app.core.cache import in_memory_cache
-from app.api.routes.dashboard import parse_filter_days
+from app.api.routes.dashboard import parse_filter_days, normalize_platform_filter
 
 router = APIRouter(tags=["Sentiment"])
 
 def serialize_post(p: Post) -> Dict[str, Any]:
+    norm_platform = (
+        "x" if p.platform and p.platform.lower() in ["twitter", "x"]
+        else "instagram" if p.platform and p.platform.lower() in ["instagram", "ig"]
+        else (p.platform or "x")
+    )
+    topic_name = getattr(p, "topic", None)
+    topic_str = topic_name.name if topic_name else (f"Topik #{p.topic_id}" if p.topic_id else "")
     return {
         "id": str(p.id),
-        "platform": p.platform,
+        "platform": norm_platform,
+        "original_platform": p.platform,
         "platform_post_id": p.platform_post_id,
         "author_username": p.author_username,
         "username": p.author_username,
@@ -28,6 +36,8 @@ def serialize_post(p: Post) -> Dict[str, Any]:
         "hashtags": p.hashtags or [],
         "sentiment": p.sentiment or "neutral",
         "sentiment_score": p.sentiment_score or 0.0,
+        "topic": topic_str,
+        "topic_id": p.topic_id,
         "posted_at": p.posted_at.isoformat() if p.posted_at else None,
         "created_at": p.created_at.isoformat() if p.created_at else None,
         "date": p.posted_at.strftime("%Y-%m-%d %H:%M:%S") if p.posted_at else None
@@ -53,8 +63,9 @@ def get_sentiment_posts(
         start_date = datetime.utcnow() - timedelta(days=filter_days)
         query = query.filter(Post.posted_at >= start_date)
         
-    if platform and isinstance(platform, str) and platform.lower() != "all":
-        query = query.filter(Post.platform == platform.lower())
+    plat_filter = normalize_platform_filter(platform)
+    if plat_filter:
+        query = query.filter(Post.platform.in_(plat_filter))
 
     if sentiment and isinstance(sentiment, str) and sentiment.lower() != "all":
         query = query.filter(Post.sentiment == sentiment.lower())
@@ -83,8 +94,9 @@ def get_sentiment_distribution(
         start_date = datetime.utcnow() - timedelta(days=filter_days)
         query = query.filter(Post.posted_at >= start_date)
 
-    if platform and isinstance(platform, str) and platform.lower() != "all":
-        query = query.filter(Post.platform == platform.lower())
+    plat_filter = normalize_platform_filter(platform)
+    if plat_filter:
+        query = query.filter(Post.platform.in_(plat_filter))
 
     counts = query.group_by(Post.sentiment).all()
     dist = {"positive": 0, "neutral": 0, "negative": 0, "unlabeled": 0}
@@ -121,8 +133,9 @@ def get_sentiment_timeline(
         start_date = datetime.utcnow() - timedelta(days=filter_days)
         query = query.filter(Post.posted_at >= start_date)
 
-    if platform and isinstance(platform, str) and platform.lower() != "all":
-        query = query.filter(Post.platform == platform.lower())
+    plat_filter = normalize_platform_filter(platform)
+    if plat_filter:
+        query = query.filter(Post.platform.in_(plat_filter))
 
     stats = query.group_by(date_col, Post.sentiment).order_by(date_col).all()
 
@@ -137,8 +150,8 @@ def get_sentiment_timeline(
          .filter(Post.posted_at.isnot(None))
         if filter_days:
             t_query = t_query.filter(Post.posted_at >= start_date)
-        if platform and isinstance(platform, str) and platform.lower() != "all":
-            t_query = t_query.filter(Post.platform == platform.lower())
+        if plat_filter:
+            t_query = t_query.filter(Post.platform.in_(plat_filter))
         t_rows = t_query.group_by(date_col, Topic.name).order_by(date_col, func.count(Post.id).desc()).all()
         for d_v, t_name, _ in t_rows:
             d_s = str(d_v) if d_v else "unknown"

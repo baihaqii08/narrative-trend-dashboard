@@ -41,6 +41,22 @@ def parse_filter_days(days: Optional[Any] = None, time_filter: Optional[str] = N
 
     return filter_days
 
+def normalize_platform_filter(platform: Optional[str]) -> Optional[list]:
+    """
+    Menormalkan parameter platform agar mencakup variasi database ('x', 'twitter', 'X', 'Twitter', dll).
+    Mencegah query mengembalikan 0 postingan ketika filter bernilai 'x' tetapi kolom database bertuliskan 'twitter'.
+    """
+    if not platform or not isinstance(platform, str):
+        return None
+    p = platform.strip().lower()
+    if p in ["all", "null", "undefined", "none", "*", ""]:
+        return None
+    if p in ["x", "twitter"]:
+        return ["x", "twitter", "X", "Twitter"]
+    if p in ["instagram", "ig"]:
+        return ["instagram", "ig", "Instagram", "IG"]
+    return [platform, platform.lower(), platform.upper(), platform.capitalize()]
+
 @router.get("/overview")
 @in_memory_cache(ttl_seconds=120)
 def get_dashboard_overview(
@@ -60,8 +76,9 @@ def get_dashboard_overview(
         start_date = datetime.utcnow() - timedelta(days=filter_days)
         query = query.filter(Post.posted_at >= start_date)
 
-    if platform and isinstance(platform, str) and platform.lower() != "all":
-        query = query.filter(Post.platform == platform.lower())
+    plat_filter = normalize_platform_filter(platform)
+    if plat_filter:
+        query = query.filter(Post.platform.in_(plat_filter))
 
     stats = query.with_entities(
         func.count(Post.id).label("total_posts"),
@@ -121,8 +138,8 @@ def get_dashboard_overview(
                 func.count(Post.id).label("prev_posts"),
                 func.sum(Post.likes + Post.comments + Post.shares).label("prev_eng")
             ).filter(Post.posted_at >= prev_start, Post.posted_at < start_date)
-            if platform and isinstance(platform, str) and platform.lower() != "all":
-                prev_q = prev_q.filter(Post.platform == platform.lower())
+            if plat_filter:
+                prev_q = prev_q.filter(Post.platform.in_(plat_filter))
             prev_row = prev_q.first()
             p_posts = (prev_row.prev_posts if prev_row else 0) or 0
             p_eng = (prev_row.prev_eng if prev_row else 0) or 0
@@ -139,8 +156,8 @@ def get_dashboard_overview(
                     func.count(Post.id).label("prev_posts"),
                     func.sum(Post.likes + Post.comments + Post.shares).label("prev_eng")
                 ).filter(Post.posted_at < mid_p)
-                if platform and isinstance(platform, str) and platform.lower() != "all":
-                    prev_q = prev_q.filter(Post.platform == platform.lower())
+                if plat_filter:
+                    prev_q = prev_q.filter(Post.platform.in_(plat_filter))
                 prev_row = prev_q.first()
                 p_posts = (prev_row.prev_posts if prev_row else 0) or 0
                 p_eng = (prev_row.prev_eng if prev_row else 0) or 0
@@ -149,8 +166,8 @@ def get_dashboard_overview(
                     func.count(Post.id).label("curr_posts"),
                     func.sum(Post.likes + Post.comments + Post.shares).label("curr_eng")
                 ).filter(Post.posted_at >= mid_p)
-                if platform and isinstance(platform, str) and platform.lower() != "all":
-                    curr_q = curr_q.filter(Post.platform == platform.lower())
+                if plat_filter:
+                    curr_q = curr_q.filter(Post.platform.in_(plat_filter))
                 curr_row = curr_q.first()
                 c_posts = (curr_row.curr_posts if curr_row else 0) or 0
                 c_eng = (curr_row.curr_eng if curr_row else 0) or 0
@@ -161,6 +178,25 @@ def get_dashboard_overview(
                     engagement_growth = round(((c_eng - p_eng) / p_eng) * 100, 1)
     except Exception:
         pass
+
+    # Platform distribution gabungan riil (Instagram vs X)
+    plat_stats = db.query(Post.platform, func.count(Post.id)).group_by(Post.platform).all()
+    ig_posts = 0
+    x_posts = 0
+    for p_name, p_cnt in plat_stats:
+        p_lower = str(p_name).lower() if p_name else ""
+        if "insta" in p_lower or p_lower == "ig":
+            ig_posts += p_cnt
+        elif "twit" in p_lower or p_lower == "x":
+            x_posts += p_cnt
+
+    total_plat = ig_posts + x_posts
+    ig_pct = round((ig_posts / total_plat * 100)) if total_plat > 0 else 50
+    x_pct = 100 - ig_pct if total_plat > 0 else 50
+    platform_distribution = {
+        "instagram": {"percentage": ig_pct, "posts": ig_posts},
+        "x": {"percentage": x_pct, "posts": x_posts}
+    }
 
     kpi_dict = {
         "total_posts": total_posts,
@@ -178,7 +214,8 @@ def get_dashboard_overview(
         "top_neutral_topic": top_neutral_topic,
         "top_negative_topic": top_negative_topic,
         "posts_growth": posts_growth,
-        "engagement_growth": engagement_growth
+        "engagement_growth": engagement_growth,
+        "platform_distribution": platform_distribution
     }
     
     return {
@@ -199,6 +236,7 @@ def get_dashboard_overview(
         "top_negative_topic": top_negative_topic,
         "posts_growth": posts_growth,
         "engagement_growth": engagement_growth,
+        "platform_distribution": platform_distribution,
         "breakdown": {
             "likes": total_likes,
             "comments": total_comments,
@@ -230,8 +268,9 @@ def get_dashboard_timeline(
         start_date = datetime.utcnow() - timedelta(days=filter_days)
         query = query.filter(Post.posted_at >= start_date)
 
-    if platform and isinstance(platform, str) and platform.lower() != "all":
-        query = query.filter(Post.platform == platform.lower())
+    plat_filter = normalize_platform_filter(platform)
+    if plat_filter:
+        query = query.filter(Post.platform.in_(plat_filter))
 
     daily_stats = query.group_by(date_col).order_by(date_col).all()
     timeline = [{"date": str(stat.date), "count": stat.count} for stat in daily_stats]
@@ -261,8 +300,9 @@ def get_dashboard_sentiment(
         start_date = datetime.utcnow() - timedelta(days=filter_days)
         query = query.filter(Post.posted_at >= start_date)
 
-    if platform and isinstance(platform, str) and platform.lower() != "all":
-        query = query.filter(Post.platform == platform.lower())
+    plat_filter = normalize_platform_filter(platform)
+    if plat_filter:
+        query = query.filter(Post.platform.in_(plat_filter))
 
     sentiment_counts = query.group_by(Post.sentiment).all()
     

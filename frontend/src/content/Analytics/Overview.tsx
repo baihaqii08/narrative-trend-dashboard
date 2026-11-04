@@ -181,7 +181,13 @@ function Overview({ theme, isDark, timeFilter = 'all', setTimeFilter, platformFi
 
   // Filter socialData dynamically based on activeTab platform
   const socialData = useMemo(() => {
-    return timeFilteredRaw.filter(item => item.platform && item.platform.toLowerCase() === activeTab.toLowerCase());
+    return timeFilteredRaw.filter(item => {
+      const p = item.platform ? item.platform.toLowerCase() : '';
+      if (activeTab === 'x') {
+        return p === 'x' || p === 'twitter';
+      }
+      return p === 'instagram' || p === 'ig';
+    });
   }, [timeFilteredRaw, activeTab]);
 
   // Derived Statistics from PostgreSQL Database (combining dedicated API endpoints & posts data)
@@ -413,7 +419,7 @@ function Overview({ theme, isDark, timeFilter = 'all', setTimeFilter, platformFi
       let instaTotal = 0, xTotal = 0;
       timeFilteredRaw.forEach(item => {
         const p = item.platform?.toLowerCase();
-        if (p === 'instagram') instaTotal++;
+        if (p === 'instagram' || p === 'ig') instaTotal++;
         else if (p === 'twitter' || p === 'x') xTotal++;
       });
       const totalDist = instaTotal + xTotal;
@@ -504,7 +510,7 @@ function Overview({ theme, isDark, timeFilter = 'all', setTimeFilter, platformFi
       const dayKey = `${String(d.getDate()).padStart(2, '0')} ${d.toLocaleString('default', { month: 'short' })}`;
       if (dayKey !== selectedDate) return;
       const p = item.platform?.toLowerCase();
-      if (p === 'instagram') instaTotal++;
+      if (p === 'instagram' || p === 'ig') instaTotal++;
       else if (p === 'twitter' || p === 'x') xTotal++;
     });
     const totalDist = instaTotal + xTotal;
@@ -577,23 +583,29 @@ function Overview({ theme, isDark, timeFilter = 'all', setTimeFilter, platformFi
     });
 
     let prevItems: any[] = [];
+    const isPlatformMatch = (p?: string) => {
+      if (!p) return false;
+      const pl = p.toLowerCase();
+      return activeTab === 'x' ? (pl === 'x' || pl === 'twitter') : (pl === 'instagram' || pl === 'ig');
+    };
+
     if (timeFilter === 'last7') {
       const c1 = new Date(maxDate); c1.setDate(c1.getDate() - 7);
       const c2 = new Date(maxDate); c2.setDate(c2.getDate() - 14);
-      prevItems = socialDataRaw.filter(d => d.platform && d.platform.toLowerCase() === activeTab.toLowerCase() && new Date(d.timestamp) >= c2 && new Date(d.timestamp) < c1);
+      prevItems = socialDataRaw.filter(d => isPlatformMatch(d.platform) && new Date(d.timestamp) >= c2 && new Date(d.timestamp) < c1);
     } else if (timeFilter === 'last14') {
       const c1 = new Date(maxDate); c1.setDate(c1.getDate() - 14);
       const c2 = new Date(maxDate); c2.setDate(c2.getDate() - 28);
-      prevItems = socialDataRaw.filter(d => d.platform && d.platform.toLowerCase() === activeTab.toLowerCase() && new Date(d.timestamp) >= c2 && new Date(d.timestamp) < c1);
+      prevItems = socialDataRaw.filter(d => isPlatformMatch(d.platform) && new Date(d.timestamp) >= c2 && new Date(d.timestamp) < c1);
     } else if (timeFilter === 'last30') {
       const c1 = new Date(maxDate); c1.setDate(c1.getDate() - 30);
       const c2 = new Date(maxDate); c2.setDate(c2.getDate() - 60);
-      prevItems = socialDataRaw.filter(d => d.platform && d.platform.toLowerCase() === activeTab.toLowerCase() && new Date(d.timestamp) >= c2 && new Date(d.timestamp) < c1);
+      prevItems = socialDataRaw.filter(d => isPlatformMatch(d.platform) && new Date(d.timestamp) >= c2 && new Date(d.timestamp) < c1);
     } else {
       let minDate = new Date(maxDate);
       socialDataRaw.forEach(d => { const dt = new Date(d.timestamp); if (dt < minDate) minDate = dt; });
       const mid = new Date((minDate.getTime() + maxDate.getTime()) / 2);
-      prevItems = socialDataRaw.filter(d => d.platform && d.platform.toLowerCase() === activeTab.toLowerCase() && new Date(d.timestamp) < mid);
+      prevItems = socialDataRaw.filter(d => isPlatformMatch(d.platform) && new Date(d.timestamp) < mid);
     }
 
     const prevTotal = prevItems.length || 1;
