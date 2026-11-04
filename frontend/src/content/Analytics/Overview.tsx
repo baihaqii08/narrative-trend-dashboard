@@ -316,7 +316,7 @@ function Overview({ theme, isDark, timeFilter = 'all', setTimeFilter, platformFi
         ? overviewApiData.topTopics.slice(0, 4)
         : postsDerivedTopics;
 
-    const firstDbTopic = overviewApiData?.dominantTopic || (topTopicsData.length > 0 ? topTopicsData[0].title : 'Karhutla');
+    const firstDbTopic = overviewApiData?.dominantTopic || (topTopicsData.length > 0 ? topTopicsData[0].title : 'Makan Bergizi Gratis');
 
     // Top Positive / Negative / Neutral Topic dari database
     const sortedPosTopics = Object.entries(posTopicCounts).sort((a, b) => b[1] - a[1]);
@@ -629,16 +629,16 @@ function Overview({ theme, isDark, timeFilter = 'all', setTimeFilter, platformFi
 
       const dominant = dominantSentiment;
       let dominantShare = neuShare;
-      let dominantTopic = topNeutralTopic || topPositiveTopic || 'Karhutla';
+      let dominantTopic = topNeutralTopic || topPositiveTopic || 'Makan Bergizi Gratis';
       let prevShare = prevPeriodStats.neuShare;
 
       if (dominant === 'positive') {
         dominantShare = posShare;
-        dominantTopic = topPositiveTopic || 'Karhutla';
+        dominantTopic = topPositiveTopic || 'Makan Bergizi Gratis';
         prevShare = prevPeriodStats.posShare;
       } else if (dominant === 'negative') {
         dominantShare = negShare;
-        dominantTopic = topNegativeTopic || 'Karhutla';
+        dominantTopic = topNegativeTopic || 'Makan Bergizi Gratis';
         prevShare = prevPeriodStats.negShare;
       }
 
@@ -697,7 +697,7 @@ function Overview({ theme, isDark, timeFilter = 'all', setTimeFilter, platformFi
       return {
         dominant,
         dominantShare: dominantShare.toFixed(1),
-        dominantTopic: dayPayload.topPositiveTopic || topPositiveTopic || 'Karhutla',
+        dominantTopic: dayPayload.topPositiveTopic || topPositiveTopic || 'Makan Bergizi Gratis',
         diff,
         badgeText: `${diff >= 0 ? '↑' : '↓'} ${Math.abs(diff).toFixed(1)}% vs. avg`,
         badgeBg: dominant === 'positive' ? '#dcfce7' : dominant === 'negative' ? '#fee2e2' : '#e2e8f0',
@@ -708,7 +708,7 @@ function Overview({ theme, isDark, timeFilter = 'all', setTimeFilter, platformFi
     return {
       dominant: dominantSentiment,
       dominantShare: neutralShare,
-      dominantTopic: topNeutralTopic || 'Karhutla',
+      dominantTopic: topNeutralTopic || 'Makan Bergizi Gratis',
       diff: 0,
       badgeText: `${neutralShare}% share`,
       badgeBg: '#e2e8f0',
@@ -730,7 +730,7 @@ function Overview({ theme, isDark, timeFilter = 'all', setTimeFilter, platformFi
   // Dynamic banner configuration sesuai instruksi Backend (poin #3)
   const bannerConfig = useMemo(() => {
     const { dominant, dominantShare, dominantTopic, badgeText, badgeBg, badgeColor } = activeDominantStats;
-    const topicLabel = dominantTopic && dominantTopic !== '-' ? dominantTopic : 'Karhutla';
+    const topicLabel = dominantTopic && dominantTopic !== '-' ? dominantTopic : 'Makan Bergizi Gratis';
 
     if (dominant === 'negative') {
       return {

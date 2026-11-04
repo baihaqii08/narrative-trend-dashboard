@@ -3,9 +3,7 @@ import os
 if hasattr(sys.stdout, 'reconfigure'):
     sys.stdout.reconfigure(encoding='utf-8')
 from datetime import datetime, timedelta
-import random
 
-# Ensure current directory is on python path
 current_dir = os.path.dirname(os.path.abspath(__file__))
 if current_dir not in sys.path:
     sys.path.insert(0, current_dir)
@@ -43,17 +41,15 @@ def ensure_database_exists():
             print(f"      ✅ Database '{db_name}' berhasil dibuat!")
         cur.close()
         conn.close()
-    except Exception as e:
-        # Jika gagal connect ke postgres default, biarkan engine mencoba langsung
+    except Exception:
         pass
 
 def seed():
     print("=" * 60)
-    print("🚀 Inisialisasi & Seeding Database NoLimit (narrative_db)")
+    print("🚀 Inisialisasi & Seeding Database Narrative Trend (MBG)")
     print("=" * 60)
 
     try:
-        # 1. Pastikan database dan seluruh tabel terbuat
         print("[1/4] Memeriksa & membuat struktur tabel di PostgreSQL (narrative_db)...")
         ensure_database_exists()
         Base.metadata.create_all(bind=engine)
@@ -61,14 +57,10 @@ def seed():
     except Exception as e:
         print("      ❌ Gagal terhubung ke PostgreSQL.")
         print(f"      Detail Error: {e}")
-        print("\n💡 TIP: Pastikan Docker Desktop menyala, lalu jalankan:")
-        print("   cd Backend")
-        print("   docker-compose up -d postgres")
         return
 
     db = SessionLocal()
     try:
-        # 2. Seed Default User untuk Login FE
         print("\n[2/4] Memeriksa Akun Pengguna (User Login)...")
         admin_email = "admin@example.com"
         admin_user = db.query(User).filter(
@@ -81,45 +73,42 @@ def seed():
             admin_user = User(
                 username="admin",
                 email=admin_email,
-                full_name="Administrator NoLimit",
+                full_name="Administrator Dashboard",
                 password_hash=hashed_pw,
                 is_active=True
             )
             db.add(admin_user)
             db.commit()
             db.refresh(admin_user)
-            print(f"      ✅ Akun berhasil dibuat!")
-            print(f"         - Email   : {admin_email}")
-            print(f"         - Password: {default_password}")
-            print(f"         - Username: admin")
+            print(f"      ✅ Akun berhasil dibuat ({admin_email})!")
         else:
             print(f"      ℹ️  Akun sudah ada: {admin_user.email} (Username: {admin_user.username})")
 
-        # 3. Seed Trending Topics (Khusus Karhutla)
-        print("\n[3/4] Memeriksa Data Trending Topics Karhutla...")
+        # 3. Seed Trending Topics (Khusus Makan Bergizi Gratis / MBG)
+        print("\n[3/4] Memeriksa Data Trending Topics MBG...")
         topic_count = db.query(Topic).count()
         topics_created = []
         if topic_count == 0:
             sample_topics = [
                 {
-                    "name": "Bencana Karhutla & Titik Api Lahan Gambut",
-                    "keywords": ["karhutla", "kebakaran hutan", "lahan gambut", "titik api", "kalimantan", "sumatera"],
-                    "post_count": 5420
+                    "name": "Program Makan Bergizi Gratis (MBG)",
+                    "keywords": ["mbg", "makan bergizi gratis", "program mbg", "menu mbg", "gizi anak", "sekolah"],
+                    "post_count": 5840
                 },
                 {
-                    "name": "Dampak Kabut Asap & Kualitas Udara (ISPU)",
-                    "keywords": ["kabut asap", "ispu", "polusi udara", "ispa", "sampit", "palembang"],
-                    "post_count": 4180
+                    "name": "Tata Kelola SPPG & Badan Gizi Nasional (BGN)",
+                    "keywords": ["bgn", "badan gizi nasional", "sppg", "dapur mbg", "umkm", "distribusi mbg"],
+                    "post_count": 3420
                 },
                 {
-                    "name": "Satgas Manggala Agni & Penegakan Hukum",
-                    "keywords": ["manggala agni", "satgas karhutla", "patroli karhutla", "bnpb"],
-                    "post_count": 2650
+                    "name": "Evaluasi Keamanan Pangan & Higienitas Menu",
+                    "keywords": ["keamanan pangan", "keracunan mbg", "higienitas", "bpom", "menu sehat", "evaluasi mbg"],
+                    "post_count": 2190
                 },
                 {
-                    "name": "Operasi Water Bombing & Hujan Buatan (TMC)",
-                    "keywords": ["water bombing", "hujan buatan", "helikopter water bombing", "pemadaman"],
-                    "post_count": 1991
+                    "name": "Efisiensi Anggaran APBN & Pencegahan Stunting",
+                    "keywords": ["anggaran mbg", "stunting", "apbn", "susu gratis", "ibu hamil", "balita"],
+                    "post_count": 1202
                 },
             ]
             for t_data in sample_topics:
@@ -127,32 +116,28 @@ def seed():
                     name=t_data["name"],
                     keywords=t_data["keywords"],
                     post_count=t_data["post_count"],
-                    first_seen=datetime.utcnow() - timedelta(days=7),
+                    first_seen=datetime.utcnow() - timedelta(days=30),
                     last_seen=datetime.utcnow()
                 )
                 db.add(t)
                 topics_created.append(t)
             db.commit()
-            print(f"      ✅ Berhasil menambahkan {len(sample_topics)} topik tren Karhutla.")
+            print(f"      ✅ Berhasil menambahkan {len(sample_topics)} topik tren MBG.")
         else:
             topics_created = db.query(Topic).all()
             print(f"      ℹ️  Topik tren sudah tersedia ({topic_count} topik).")
 
-        # 4. Seed Sample Posts untuk KPI, Timeline & Sentiment Chart (Khusus Karhutla)
-        print("\n[4/4] Memeriksa Data Postingan Karhutla...")
+        # 4. Seed Sample Posts untuk KPI, Timeline & Sentiment Chart (Khusus MBG)
+        print("\n[4/4] Memeriksa Data Postingan MBG...")
         post_count = db.query(Post).count()
         if post_count == 0:
             sample_contents = [
-                ("twitter", "negative", "indepenSumatera", "Kebakaran hutan dan lahan (karhutla) kembali melanda kawasan Sampit. Kobaran api membakar lahan gambut membuat asap pekat mulai menyelimuti pemukiman warga.", 1240, 215, 140, 9800),
-                ("twitter", "negative", "Metro_TV", "Kawasan konservasi Taman Nasional Bromo Tengger Semeru kembali dilanda bencana kebakaran hutan dan lahan. Petugas gabungan diterjunkan memadamkan api.", 980, 110, 85, 7400),
-                ("twitter", "positive", "relawan_hijau", "Apresiasi setinggi-tingginya untuk tim Satgas Manggala Agni dan BNPB yang berjibaku melakukan water bombing di titik api Sumatera.", 620, 78, 55, 4300),
-                ("twitter", "negative", "kabar_borneo", "Kondisi udara di Kalimantan pagi ini masuk kategori sangat tidak sehat akibat kabut asap karhutla pekat. Warga diimbau pakai masker.", 1850, 290, 180, 13100),
-                ("twitter", "neutral", "bnpb_indonesia", "Update pemadaman karhutla: Tiga helikopter water bombing dikerahkan untuk memadamkan kebakaran gambut di Ogan Komering Ilir.", 450, 52, 60, 5100),
-                ("twitter", "negative", "NaraSenyap", "Satwa liar ikut terdampak kebakaran hutan dan lahan gambut di Kalimantan. Upaya evakuasi terus dilakukan oleh relawan BKSDA.", 890, 145, 95, 7800),
-                ("twitter", "positive", "hujan_berkah", "Alhamdulillah hujan buatan dari TMC berhasil membasahi wilayah Riau dan titik asap karhutla mulai berkurang drastis.", 1420, 180, 110, 10200),
-                ("twitter", "neutral", "bmkg_wilayah", "Pantauan citra satelit mendeteksi penurunan hotspot karhutla di wilayah Sumatera Selatan setelah operasi rekayasa cuaca.", 380, 35, 28, 3600),
-                ("twitter", "negative", "warga_palembang", "Pagi ini aroma asap karhutla sangat menyengat sampai ke pusat kota Palembang, anak-anak sekolah mulai banyak yang batuk dan sesak napas.", 1120, 160, 88, 8900),
-                ("twitter", "positive", "patroli_hutan", "Kerja keras tim gabungan TNI, Polri, dan Manggala Agni berhasil melokalisir api di kawasan gambut sebelum merembet.", 740, 85, 45, 5900),
+                ("twitter", "positive", "info_pendidikan", "Program Makan Bergizi Gratis (MBG) resmi berjalan di ribuan sekolah dan membantu pemenuhan gizi harian siswa sekaligus memberdayakan katering UMKM daerah.", 1540, 210, 340, 18500),
+                ("twitter", "neutral", "ekonomi_publik", "Badan Gizi Nasional (BGN) memperkuat standar operasional seluruh Satuan Pelayanan Pemenuhan Gizi (SPPG) agar distribusi menu tepat waktu.", 820, 95, 130, 9400),
+                ("twitter", "negative", "pantau_kebijakan", "Sejumlah orang tua siswa meminta evaluasi ketat terhadap higienitas dapur SPPG menyusul keluhan menu MBG yang kurang segar di beberapa daerah.", 1920, 410, 520, 24100),
+                ("twitter", "positive", "umkm_bangkit", "Alhamdulillah dapur umum MBG di daerah kami melibatkan petani sayur, peternak telur, dan koperasi desa secara langsung.", 1280, 145, 290, 14200),
+                ("twitter", "neutral", "kabar_nasional", "BPOM bersama Dinas Kesehatan meningkatkan pengawasan berkala terhadap kualitas bahan baku pada dapur penyedia Makan Bergizi Gratis.", 640, 72, 110, 8100),
+                ("twitter", "positive", "gizi_indonesia", "Kombinasi protein hewani, sayur, dan buah pada menu Makan Bergizi Gratis dirancang oleh ahli gizi di setiap unit SPPG.", 950, 88, 175, 11300),
             ]
 
             now = datetime.utcnow()
@@ -176,15 +161,12 @@ def seed():
                 db.add(post)
 
             db.commit()
-            print(f"      ✅ Berhasil menambahkan 10 data postingan sampel Karhutla untuk testing grafik FE.")
+            print(f"      ✅ Berhasil menambahkan {len(sample_contents)} data postingan sampel MBG.")
         else:
             print(f"      ℹ️  Data postingan sudah tersedia ({post_count} posts).")
 
         print("\n" + "=" * 60)
         print("🎉 SELESAI! Backend siap digunakan oleh Front-End.")
-        print(f"   Kredensial Login Front-End (http://localhost:5173):")
-        print(f"   👉 Email    : admin@example.com")
-        print(f"   👉 Password : admin123")
         print("=" * 60)
 
     finally:
