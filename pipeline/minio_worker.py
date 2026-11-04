@@ -7,7 +7,7 @@ import greenstalk
 from datetime import datetime
 
 # ==========================================
-# KONFIGURASI BEANSTALKD & S3 (MINIO FAIQ)
+# KONFIGURASI BEANSTALKD & S3 (MINIO)
 # ==========================================
 BEANSTALKD_HOST = '127.0.0.1'
 BEANSTALKD_PORT = 11300
@@ -16,10 +16,10 @@ TUBES = ['raw-data', 'quarantine-data']
 from dotenv import load_dotenv
 load_dotenv()
 
-# Kredensial MinIO Faiq (diambil dari .env)
-S3_ENDPOINT = os.getenv('S3_ENDPOINT', 'https://ventral-unfondly-rosalyn.ngrok-free.dev')
+# Kredensial MinIO (diambil dari .env)
+S3_ENDPOINT = os.getenv('S3_ENDPOINT', 'http://localhost:9000')
 ACCESS_KEY = os.getenv('MINIO_ACCESS_KEY', 'admin')
-SECRET_KEY = os.getenv('MINIO_SECRET_KEY', 'password123')
+SECRET_KEY = os.getenv('MINIO_SECRET_KEY', '')
 BUCKET_NAME = os.getenv('MINIO_BUCKET_NAME', 'narative-datalake')
 
 def get_s3_client():

@@ -30,7 +30,7 @@ Dokumen ini merangkum seluruh perencanaan teknis (Implementation Plan) yang tela
 - Menerapkan mekanisme penjadwalan (*loop* abadi 24 jam) yang menarik data berdasarkan interval waktu tertentu.
 
 ### 2. Parser & Uploader (MinIO Integration)
-**Pendekatan:** Menghindari dependensi *Beanstalkd* lokal dengan langsung menembakkan data bersih ke *Datalake* DE 1 (Mas Faiq).
+**Pendekatan:** Menghindari dependensi *Beanstalkd* lokal dengan langsung menembakkan data bersih ke *Datalake* DE 1 (DE 1).
 **Alur Data:**
 1. Membaca *batch* file `.json` mentah hasil intersepsi.
 2. Mengeksekusi modul `validator.py` (Smart 3-Tier Filter) untuk mendeteksi *Hard Block* (Pornografi/Judi) dan *Quarantine* (Promo/Suspicious).

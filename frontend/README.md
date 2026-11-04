@@ -18,7 +18,7 @@ Isi konfigurasi API Backend:
 VITE_API_BASE_URL=http://localhost:8000
 
 # Atau arahkan ke IP Tailscale jika backend berjalan di laptop DE 2:
-# VITE_API_BASE_URL=http://100.71.67.42:8000
+# VITE_API_BASE_URL=http://<IP-BACKEND>:8000
 ```
 
 ### 3. Instalasi & Menjalankan Frontend
