@@ -98,13 +98,15 @@ function Overview({ theme, isDark, timeFilter = 'all', setTimeFilter, platformFi
         setTopicsApiData(topicsRes.value);
         anySuccess = true;
       }
-      if (postsRes.status === 'fulfilled') {
+      if (postsRes.status === 'fulfilled' && postsRes.value.length > 0) {
         setSocialDataRaw(postsRes.value);
         anySuccess = true;
       }
 
-      if (!anySuccess && overviewRes.status === 'rejected' && postsRes.status === 'rejected') {
-        throw overviewRes.reason || postsRes.reason;
+      if (!anySuccess) {
+        setApiError(
+          `Gagal memuat data dari Backend (${import.meta.env.VITE_API_BASE_URL || 'http://localhost:8000/api'}). Pastikan server FastAPI menyala dan database terhubung.`
+        );
       }
 
       const now = new Date();
