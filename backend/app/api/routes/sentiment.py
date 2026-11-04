@@ -5,7 +5,7 @@ from typing import Optional, List, Dict, Any
 from datetime import datetime, timedelta
 
 from app.api.dependencies import get_db
-from models import Post
+from models import Post, Topic
 from app.core.cache import in_memory_cache
 from app.api.routes.dashboard import parse_filter_days
 
@@ -126,14 +126,50 @@ def get_sentiment_timeline(
 
     stats = query.group_by(date_col, Post.sentiment).order_by(date_col).all()
 
+    # Query topik dominan per hari untuk akurasi data tooltip pada Line Chart
+    daily_topics: Dict[str, str] = {}
+    try:
+        t_query = db.query(
+            date_col,
+            Topic.name,
+            func.count(Post.id)
+        ).join(Topic, Post.topic_id == Topic.id)\
+         .filter(Post.posted_at.isnot(None))
+        if filter_days:
+            t_query = t_query.filter(Post.posted_at >= start_date)
+        if platform and isinstance(platform, str) and platform.lower() != "all":
+            t_query = t_query.filter(Post.platform == platform.lower())
+        t_rows = t_query.group_by(date_col, Topic.name).order_by(date_col, func.count(Post.id).desc()).all()
+        for d_v, t_name, _ in t_rows:
+            d_s = str(d_v) if d_v else "unknown"
+            if d_s not in daily_topics:
+                daily_topics[d_s] = t_name
+    except Exception:
+        pass
+
     timeline_dict: Dict[str, Dict[str, Any]] = {}
     for date_val, sent, count in stats:
         d_str = str(date_val) if date_val else "unknown"
         if d_str not in timeline_dict:
-            timeline_dict[d_str] = {"date": d_str, "positive": 0, "neutral": 0, "negative": 0, "total": 0}
+            timeline_dict[d_str] = {
+                "date": d_str,
+                "positive": 0,
+                "neutral": 0,
+                "negative": 0,
+                "total": 0,
+                "dominant_topic": daily_topics.get(d_str, "Program Makan Bergizi Gratis (MBG)"),
+                "topPositiveTopic": daily_topics.get(d_str, "Program Makan Bergizi Gratis (MBG)"),
+                "topNeutralTopic": daily_topics.get(d_str, "Program Makan Bergizi Gratis (MBG)"),
+                "topNegativeTopic": daily_topics.get(d_str, "Program Makan Bergizi Gratis (MBG)")
+            }
         s_key = sent.lower() if sent else "unlabeled"
         if s_key in timeline_dict[d_str]:
             timeline_dict[d_str][s_key] += count
         timeline_dict[d_str]["total"] += count
+        if d_str in daily_topics:
+            timeline_dict[d_str]["dominant_topic"] = daily_topics[d_str]
+            timeline_dict[d_str]["topPositiveTopic"] = daily_topics[d_str]
+            timeline_dict[d_str]["topNeutralTopic"] = daily_topics[d_str]
+            timeline_dict[d_str]["topNegativeTopic"] = daily_topics[d_str]
 
     return list(timeline_dict.values())

@@ -843,6 +843,58 @@ function Overview({ theme, isDark, timeFilter = 'all', setTimeFilter, platformFi
     };
   }, [activeDominantStats, overviewApiData, periodLabelEn, selectedDate, timeFilter]);
 
+  // Dynamic Sentiment & Topic Inspector untuk Hover Tooltip & Floating Badge
+  const getDailySentimentInfo = (data: any) => {
+    const fallbackTopic =
+      activeDominantStats.dominantTopic ||
+      overviewApiData?.dominantTopic ||
+      'Program Makan Bergizi Gratis (MBG)';
+
+    if (!data) {
+      return {
+        type: 'neutral',
+        label: 'Sentimen Dominan: Netral',
+        badgeBg: '#f1f5f9',
+        badgeBorder: '#cbd5e1',
+        textColor: '#334155',
+        topic: fallbackTopic
+      };
+    }
+
+    const pos = Number(data.positive || 0);
+    const neu = Number(data.neutral || 0);
+    const neg = Number(data.negative || 0);
+
+    if (pos > neu && pos >= neg) {
+      return {
+        type: 'positive',
+        label: 'Sentimen Dominan: Positif',
+        badgeBg: '#dcfce7',
+        badgeBorder: '#86efac',
+        textColor: '#166534',
+        topic: data.topPositiveTopic || topPositiveTopic || fallbackTopic
+      };
+    } else if (neg > neu && neg > pos) {
+      return {
+        type: 'negative',
+        label: 'Sentimen Dominan: Negatif',
+        badgeBg: '#fee2e2',
+        badgeBorder: '#fca5a5',
+        textColor: '#991b1b',
+        topic: data.topNegativeTopic || topNegativeTopic || fallbackTopic
+      };
+    } else {
+      return {
+        type: 'neutral',
+        label: 'Sentimen Dominan: Netral',
+        badgeBg: '#f1f5f9',
+        badgeBorder: '#cbd5e1',
+        textColor: '#334155',
+        topic: data.topNeutralTopic || data.dominant_topic || topNeutralTopic || fallbackTopic
+      };
+    }
+  };
+
   return (
     <section style={{ display: 'flex', flexDirection: 'column', gap: '20px', opacity: isRefreshing ? 0.6 : 1, transition: 'opacity 0.2s', width: '100%', boxSizing: 'border-box' }}>
 
@@ -1078,6 +1130,7 @@ function Overview({ theme, isDark, timeFilter = 'all', setTimeFilter, platformFi
         topicsCount={topicsApiData.length}
         entitiesCount={entitiesApiData.length}
         type="overview"
+        timeFilter={timeFilter}
       />
 
       {/* Row 2: Line Chart (2/3) on Left | Key Insight + Platform Distribution Stack (1/3) on Right */}
@@ -1145,29 +1198,32 @@ function Overview({ theme, isDark, timeFilter = 'all', setTimeFilter, platformFi
 
           <div style={{ height: 280, position: 'relative', width: '100%', display: 'flex', justifyContent: 'center', alignItems: 'center' }}>
             {/* Callout Tag on Peak Point - ONLY shown on graph hover */}
-            {hoveredTrendData && (
-              <div style={{
-                position: 'absolute',
-                top: '10px',
-                right: '18%',
-                zIndex: 10,
-                backgroundColor: '#dcfce7',
-                border: '1px solid #86efac',
-                padding: '6px 12px',
-                borderRadius: '8px',
-                fontSize: '11px',
-                fontWeight: '700',
-                color: '#166534',
-                boxShadow: '0 2px 8px rgba(0,0,0,0.08)',
-                pointerEvents: 'none',
-                transition: 'all 0.15s ease'
-              }}>
-                Peak positive sentiment: <br />
-                <strong style={{ fontSize: '13px', display: 'inline-block', marginTop: '2px' }}>
-                  {hoveredTrendData.topPositiveTopic || topPositiveTopic}
-                </strong>
-              </div>
-            )}
+            {hoveredTrendData && (() => {
+              const daySent = getDailySentimentInfo(hoveredTrendData);
+              return (
+                <div style={{
+                  position: 'absolute',
+                  top: '10px',
+                  right: '18%',
+                  zIndex: 10,
+                  backgroundColor: daySent.badgeBg,
+                  border: `1px solid ${daySent.badgeBorder}`,
+                  padding: '6px 12px',
+                  borderRadius: '8px',
+                  fontSize: '11px',
+                  fontWeight: '700',
+                  color: daySent.textColor,
+                  boxShadow: '0 2px 8px rgba(0,0,0,0.08)',
+                  pointerEvents: 'none',
+                  transition: 'all 0.15s ease'
+                }}>
+                  {daySent.label}: <br />
+                  <strong style={{ fontSize: '13px', display: 'inline-block', marginTop: '2px' }}>
+                    {daySent.topic}
+                  </strong>
+                </div>
+              );
+            })()}
 
             <ResponsiveContainer width="100%" height="100%">
               <LineChart
@@ -1193,7 +1249,7 @@ function Overview({ theme, isDark, timeFilter = 'all', setTimeFilter, platformFi
                   content={({ active, payload, label }: any) => {
                     if (active && payload && payload.length) {
                       const data = payload[0].payload;
-                      const peakTopic = data.topPositiveTopic || topPositiveTopic;
+                      const daySent = getDailySentimentInfo(data);
                       return (
                         <div style={{
                           backgroundColor: theme.bgCard,
@@ -1204,17 +1260,17 @@ function Overview({ theme, isDark, timeFilter = 'all', setTimeFilter, platformFi
                           textAlign: 'left'
                         }}>
                           <div style={{
-                            backgroundColor: '#dcfce7',
-                            border: '1px solid #86efac',
+                            backgroundColor: daySent.badgeBg,
+                            border: `1px solid ${daySent.badgeBorder}`,
                             padding: '6px 10px',
                             borderRadius: '8px',
                             marginBottom: '10px',
                             fontSize: '11px',
                             fontWeight: '700',
-                            color: '#166534'
+                            color: daySent.textColor
                           }}>
-                            <div>Peak positive sentiment:</div>
-                            <div style={{ fontSize: '13px', fontWeight: '800', marginTop: '2px' }}>{peakTopic}</div>
+                            <div>{daySent.label}:</div>
+                            <div style={{ fontSize: '13px', fontWeight: '800', marginTop: '2px' }}>{daySent.topic}</div>
                           </div>
                           <div style={{ fontSize: '12px', fontWeight: '800', color: theme.textMain, marginBottom: '6px' }}>{label}</div>
                           {payload.map((entry: any, index: number) => (
@@ -1340,8 +1396,8 @@ function Overview({ theme, isDark, timeFilter = 'all', setTimeFilter, platformFi
                       </h4>
                       <p style={{ margin: 0, fontSize: '12px', color: theme.textMuted, lineHeight: '1.4' }}>
                         {totalPosts > 0
-                          ? <>Puncak tren pada <strong>{peakDateStr !== '-' ? peakDateStr : timeFilterLabel}</strong> dipicu oleh diskusi seputar <strong>{topPositiveTopic}</strong>.</>
-                          : 'Menunggu data percakapan dari database PostgreSQL.'}
+                          ? <>Puncak tren pada <strong>{peakDateStr !== '-' ? peakDateStr : timeFilterLabel}</strong> dipicu oleh diskusi seputar <strong>{activeDominantStats.dominantTopic || topPositiveTopic || 'Program Makan Bergizi Gratis (MBG)'}</strong>.</>
+                          : 'Menunggu data percakapan dari database.'}
                       </p>
                     </div>
                   </div>

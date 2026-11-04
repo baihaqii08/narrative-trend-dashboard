@@ -95,6 +95,73 @@ def get_dashboard_overview(
     top_t = db.query(Topic).order_by(Topic.post_count.desc()).first()
     dominant_topic_name = top_t.name if top_t else "Program Makan Bergizi Gratis (MBG)"
 
+    def get_top_topic_for_sentiment(sent_type: str) -> str:
+        try:
+            row = db.query(Topic.name)\
+                .join(Post, Post.topic_id == Topic.id)\
+                .filter(Post.sentiment == sent_type)\
+                .group_by(Topic.name)\
+                .order_by(func.count(Post.id).desc())\
+                .first()
+            return row[0] if row else dominant_topic_name
+        except Exception:
+            return dominant_topic_name
+
+    top_positive_topic = get_top_topic_for_sentiment("positive")
+    top_neutral_topic = get_top_topic_for_sentiment("neutral")
+    top_negative_topic = get_top_topic_for_sentiment("negative")
+
+    # Hitung pertumbuhan riil vs periode sebelumnya
+    posts_growth = None
+    engagement_growth = None
+    try:
+        if filter_days:
+            prev_start = start_date - timedelta(days=filter_days)
+            prev_q = db.query(
+                func.count(Post.id).label("prev_posts"),
+                func.sum(Post.likes + Post.comments + Post.shares).label("prev_eng")
+            ).filter(Post.posted_at >= prev_start, Post.posted_at < start_date)
+            if platform and isinstance(platform, str) and platform.lower() != "all":
+                prev_q = prev_q.filter(Post.platform == platform.lower())
+            prev_row = prev_q.first()
+            p_posts = (prev_row.prev_posts if prev_row else 0) or 0
+            p_eng = (prev_row.prev_eng if prev_row else 0) or 0
+            if p_posts > 0:
+                posts_growth = round(((total_posts - p_posts) / p_posts) * 100, 1)
+            if p_eng > 0:
+                engagement_growth = round(((total_engagement - p_eng) / p_eng) * 100, 1)
+        else:
+            # Sepanjang waktu: perbandingan tren paruh kedua vs paruh pertama
+            min_p, max_p = db.query(func.min(Post.posted_at), func.max(Post.posted_at)).first()
+            if min_p and max_p and min_p < max_p:
+                mid_p = min_p + (max_p - min_p) / 2
+                prev_q = db.query(
+                    func.count(Post.id).label("prev_posts"),
+                    func.sum(Post.likes + Post.comments + Post.shares).label("prev_eng")
+                ).filter(Post.posted_at < mid_p)
+                if platform and isinstance(platform, str) and platform.lower() != "all":
+                    prev_q = prev_q.filter(Post.platform == platform.lower())
+                prev_row = prev_q.first()
+                p_posts = (prev_row.prev_posts if prev_row else 0) or 0
+                p_eng = (prev_row.prev_eng if prev_row else 0) or 0
+
+                curr_q = db.query(
+                    func.count(Post.id).label("curr_posts"),
+                    func.sum(Post.likes + Post.comments + Post.shares).label("curr_eng")
+                ).filter(Post.posted_at >= mid_p)
+                if platform and isinstance(platform, str) and platform.lower() != "all":
+                    curr_q = curr_q.filter(Post.platform == platform.lower())
+                curr_row = curr_q.first()
+                c_posts = (curr_row.curr_posts if curr_row else 0) or 0
+                c_eng = (curr_row.curr_eng if curr_row else 0) or 0
+
+                if p_posts > 0:
+                    posts_growth = round(((c_posts - p_posts) / p_posts) * 100, 1)
+                if p_eng > 0:
+                    engagement_growth = round(((c_eng - p_eng) / p_eng) * 100, 1)
+    except Exception:
+        pass
+
     kpi_dict = {
         "total_posts": total_posts,
         "total_topics": total_topics,
@@ -107,9 +174,11 @@ def get_dashboard_overview(
         "negative_share": negative_share,
         "dominant_sentiment": "neutral",
         "dominant_topic": dominant_topic_name,
-        "top_positive_topic": dominant_topic_name,
-        "top_neutral_topic": dominant_topic_name,
-        "top_negative_topic": dominant_topic_name
+        "top_positive_topic": top_positive_topic,
+        "top_neutral_topic": top_neutral_topic,
+        "top_negative_topic": top_negative_topic,
+        "posts_growth": posts_growth,
+        "engagement_growth": engagement_growth
     }
     
     return {
@@ -125,9 +194,11 @@ def get_dashboard_overview(
         "negative_share": negative_share,
         "dominant_sentiment": "neutral",
         "dominant_topic": dominant_topic_name,
-        "top_positive_topic": dominant_topic_name,
-        "top_neutral_topic": dominant_topic_name,
-        "top_negative_topic": dominant_topic_name,
+        "top_positive_topic": top_positive_topic,
+        "top_neutral_topic": top_neutral_topic,
+        "top_negative_topic": top_negative_topic,
+        "posts_growth": posts_growth,
+        "engagement_growth": engagement_growth,
         "breakdown": {
             "likes": total_likes,
             "comments": total_comments,

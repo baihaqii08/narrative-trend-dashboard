@@ -81,6 +81,8 @@ export interface DashboardOverviewData {
   keyInsights?: Array<{ title: string; description: string }>;
   topTopics?: TopicItem[];
   topEntities?: EntityItem[];
+  postsGrowth?: number;
+  engagementGrowth?: number;
 }
 
 export function normalizeEntityType(type?: string): string {
@@ -464,7 +466,19 @@ export async function fetchDashboardOverviewFromApi(params?: {
     platformDistribution,
     keyInsights: Array.isArray(data.key_insights || data.insights) ? (data.key_insights || data.insights) : undefined,
     topTopics: Array.isArray(topTopicsRaw) ? topTopicsRaw.map(normalizeTopicRecord) : undefined,
-    topEntities: Array.isArray(topEntitiesRaw) ? topEntitiesRaw.map(normalizeEntityRecord) : undefined
+    topEntities: Array.isArray(topEntitiesRaw) ? topEntitiesRaw.map(normalizeEntityRecord) : undefined,
+    postsGrowth:
+      data.posts_growth !== undefined && data.posts_growth !== null
+        ? Number(data.posts_growth)
+        : kpi.posts_growth !== undefined && kpi.posts_growth !== null
+        ? Number(kpi.posts_growth)
+        : undefined,
+    engagementGrowth:
+      data.engagement_growth !== undefined && data.engagement_growth !== null
+        ? Number(data.engagement_growth)
+        : kpi.engagement_growth !== undefined && kpi.engagement_growth !== null
+        ? Number(kpi.engagement_growth)
+        : undefined
   };
 }
 
