@@ -59,7 +59,7 @@ def get_sentiment_posts(
     if sentiment and isinstance(sentiment, str) and sentiment.lower() != "all":
         query = query.filter(Post.sentiment == sentiment.lower())
         
-    posts = query.order_by(Post.posted_at.desc().nullslast()).offset(skip).limit(limit).all()
+    posts = query.order_by(Post.posted_at.desc()).offset(skip).limit(limit).all()
     serialized = [serialize_post(p) for p in posts]
     return serialized
 

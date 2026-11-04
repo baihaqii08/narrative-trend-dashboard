@@ -24,6 +24,6 @@ echo.
 echo [SERVER READY] Backend running at http://localhost:8000
 echo [SWAGGER DOCS] http://localhost:8000/docs
 echo.
-uvicorn app.main:app --reload --host 0.0.0.0 --port 8000
+python -m uvicorn app.main:app --reload --host 0.0.0.0 --port 8000
 pause
 
