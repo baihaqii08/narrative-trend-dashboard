@@ -8,7 +8,8 @@ from datetime import datetime
 from playwright.sync_api import sync_playwright
 from dotenv import load_dotenv
 
-load_dotenv()
+BASE_DIR = os.path.dirname(os.path.abspath(__file__))
+load_dotenv(os.path.join(BASE_DIR, ".env"))
 
 TWITTER_AUTH_TOKEN = os.getenv("TWITTER_AUTH_TOKEN")
 TWITTER_CT0 = os.getenv("TWITTER_CT0")
@@ -16,23 +17,34 @@ TWITTER_CT0 = os.getenv("TWITTER_CT0")
 # Inisialisasi list untuk menampung JSON mentah dari GraphQL
 intercepted_data = []
 
-# Variabel global untuk mencatat tren apa yang sedang di-scroll
+# Variabel global untuk pencatatan dan keamanan anti-ban
 current_trend = "Unknown"
+rate_limit_flag = False
 
 
 def handle_response(response):
     """
     Fungsi penyadap (interceptor).
-    Akan dipanggil setiap kali browser menerima data (response) dari internet.
+    Mendeteksi respons API Twitter dan status Rate Limit secara otomatis.
     """
+    global rate_limit_flag
     try:
         url = response.url
-        if "api" in url or "graphql" in url:
-            print(f"  [DEBUG URL] {response.status}: {url[:100]}")
-            
-        # Kita incar jalur belakang (GraphQL API / Timeline JSON) milik Twitter
-        if response.status == 200 and ("graphql" in url or "timeline.json" in url):
-            print(f"[+] [INTERCEPT] Berhasil menyadap payload JSON dari: {url.split('?')[0].split('/')[-1]}")
+        status = response.status
+
+        # 1. PENDETEKSI RATE LIMIT (HTTP 429) - SANGAT KRUSIAL UNTUK KEAMANAN AKUN
+        if status == 429:
+            print(f"\n⚠️  [PERINGATAN RATE LIMIT] Twitter merespons HTTP 429 di: {url[:60]}...")
+            print("    Sistem pengaman otomatis diaktifkan untuk mendinginkan akun (Cool-down)!\n")
+            rate_limit_flag = True
+            return
+
+        # 2. INCAR JALUR BELAKANG GRAPHQL / TIMELINE
+        if status == 200 and ("graphql" in url or "timeline.json" in url):
+            # Abaikan request notifikasi / badge / user settings yang tidak berisi postingan
+            if any(ignore in url for ignore in ["BadgeCount", "useQuickPromote", "Settings", "Account"]):
+                return
+                
             data = response.json()
             intercepted_data.append({
                 "trend": current_trend,
@@ -40,141 +52,182 @@ def handle_response(response):
                 "timestamp": datetime.now().isoformat(),
                 "raw_json": data
             })
+            print(f"[+] [INTERCEPT] Berhasil menyadap payload cuitan dari: {url.split('?')[0].split('/')[-1]} (Total: {len(intercepted_data)})")
     except Exception as e:
-        print(f"  [DEBUG ERROR] Gagal ekstrak JSON dari {response.url[:80]}: {e}")
+        # Debug error jika ada JSON yang gagal di-decode
+        pass
 
-def extract_clean_trend_names(page):
-    """Mengekstrak daftar tren dari halaman Explore Twitter"""
-    trends = []
-    trend_elements = page.locator("div[data-testid='trend']").all()
-    
-    for el in trend_elements:
-        text = el.inner_text()
-        lines = text.split('\n')
-        
-        valid_lines = []
-        for line in lines:
-            line_clean = line.strip()
-            # Buang baris kosong, karakter titik tengah '·', dan angka urutan murni (misal: '1', '2')
-            if line_clean in ['', '·'] or line_clean.isdigit():
-                continue
-                
-            # Buang label kategori bawaan Twitter (Trending, Only on X, posts, dll)
-            lower_line = line_clean.lower()
-            if "trending" in lower_line: continue
-            if "only on x" in lower_line: continue
-            if "post" in lower_line: continue
-            
-            valid_lines.append(line_clean)
-            
-        if valid_lines:
-            # Baris valid pertama yang tersisa hampir dipastikan 100% adalah topik utamanya
-            trend_name = valid_lines[0]
-            if trend_name not in trends and len(trend_name) > 1:
-                trends.append(trend_name)
-                
-    return trends
 
-def scrape_twitter_batch(max_trends_to_scrape=10, scrolls_per_trend=3):
-    global current_trend
+def scrape_twitter_batch(max_trends_to_scrape=12, scrolls_per_trend=25):
+    """
+    Scraper MBG Anti-Ban / Anti-Suspend.
+    Menggunakan profil browser persisten, simulasi navigasi manusia, deteksi 429, dan early-exit.
+    """
+    global current_trend, rate_limit_flag
     
-    profile_dir = os.path.join(os.getcwd(), "twitter_profile")
-    raw_dir = os.path.join(os.getcwd(), "raw_batches")
+    profile_dir = os.path.join(BASE_DIR, "twitter_profile")
+    raw_dir = os.path.join(os.path.dirname(BASE_DIR), "pipeline", "raw_batches")
     
     if not os.path.exists(raw_dir):
         os.makedirs(raw_dir)
 
     with sync_playwright() as p:
-        print(f"Membuka browser dengan profil di '{profile_dir}'...")
+        print(f"\n🛡️  MEMULAI SCRAPER DENGAN MODE ANTI-BAN AKTIF")
+        print(f"📁 Menggunakan profil sesi di: '{profile_dir}'")
+        
+        # Buka browser dengan User-Agent manusiawi dan profil lokal
         browser = p.chromium.launch_persistent_context(
             user_data_dir=profile_dir,
-            headless=True,
+            headless=False, # Visual agar bisa memantau jika ada challenge / captcha
             channel="msedge", 
             viewport={"width": 1280, "height": 720},
-            args=['--disable-blink-features=AutomationControlled']
+            args=[
+                '--disable-blink-features=AutomationControlled',
+                '--no-sandbox',
+                '--disable-infobars'
+            ]
         )
         
-        # MENGINJEKSI COOKIES OTOMATIS
+        # INJEKSI COOKIES
         if TWITTER_AUTH_TOKEN:
-            print("Menginjeksi cookies ke dalam browser untuk Login Otomatis...")
             browser.add_cookies([
                 {"name": "auth_token", "value": TWITTER_AUTH_TOKEN, "domain": ".twitter.com", "path": "/"},
                 {"name": "ct0", "value": TWITTER_CT0, "domain": ".twitter.com", "path": "/"},
                 {"name": "auth_token", "value": TWITTER_AUTH_TOKEN, "domain": ".x.com", "path": "/"},
                 {"name": "ct0", "value": TWITTER_CT0, "domain": ".x.com", "path": "/"}
             ])
-            print("Cookies berhasil diinjeksi!")
+            print("✅ Cookies otentikasi akun berhasil diinjeksi.")
         
         page = browser.pages[0] if browser.pages else browser.new_page()
+        # Samarkan navigator.webdriver agar tidak terdeteksi bot
         page.add_init_script("Object.defineProperty(navigator, 'webdriver', {get: () => undefined})")
         
-        # MENGAKTIFKAN PENYADAP JARINGAN (NETWORK INTERCEPTOR)
+        # AKTIFKAN INTERCEPTOR
         page.on("response", handle_response)
         
-        # LANGKAH 1: Kumpulkan Daftar Tren
-        print("Membuka halaman Trending Indonesia...")
-        page.goto("https://x.com/explore/tabs/trending", timeout=60000)
-        time.sleep(7)
-        page.evaluate("window.scrollBy(0, 1000)")
-        time.sleep(2)
-        
-        trends = extract_clean_trend_names(page)
-        
-        print(f"\nBerhasil menemukan {len(trends)} Top Trending Topics:")
-        for i, t in enumerate(trends, 1):
-            print(f"  {i}. {t}")
+        # =========================================================================
+        # TARGET DATA KHUSUS MAKAN BERGIZI GRATIS (MBG) - 5 KLUSTER SEMANTIK
+        # =========================================================================
+        mbg_targets = [
+            # --- KLUSTER 1: REAL-TIME & LIVE (FOKUS 7 HARI & 14 HARI TERAKHIR) ---
+            {"q": "MBG OR \"makan bergizi gratis\"", "mode": "live", "label": "MBG (Live Terbaru)"},
+            {"q": "\"makan siang gratis\"", "mode": "live", "label": "Makan Siang Gratis (Live)"},
+            {"q": "\"badan gizi nasional\" OR BGN", "mode": "live", "label": "BGN Badan Gizi (Live)"},
+            {"q": "\"menu MBG\" OR \"lauk MBG\" OR \"uji coba MBG\"", "mode": "live", "label": "Menu & Lauk MBG (Live)"},
+            {"q": "\"anggaran MBG\" OR \"APBN MBG\" OR \"dana MBG\"", "mode": "live", "label": "Anggaran & APBN (Live)"},
+            {"q": "\"susu gratis\" OR \"susu ikan\"", "mode": "live", "label": "Susu Gratis & Ikan (Live)"},
+            {"q": "SPPG OR \"dapur umum MBG\" OR \"satuan pelayanan gizi\"", "mode": "live", "label": "SPPG Dapur MBG (Live)"},
+            {"q": "\"Rp 10.000\" OR \"10 ribu per porsi\" OR \"anggaran dipangkas\"", "mode": "live", "label": "Polemik 10 Ribu (Live)"},
             
-        if not trends:
-            print("Gagal menemukan elemen tren. Menggunakan tren cadangan sementara.")
-            trends = ["#Indonesia", "Viral"]
+            # --- KLUSTER 2: TARGET SPESIFIK 7 HARI TERAKHIR (DATE WINDOW) ---
+            {"q": "MBG OR \"makan bergizi gratis\" since:2026-10-28 until:2026-11-04", "mode": "top", "label": "MBG (Minggu Ini 28 Okt-4 Nov)"},
+            {"q": "\"makan siang gratis\" since:2026-10-28 until:2026-11-04", "mode": "top", "label": "Makan Siang (Minggu Ini 28 Okt-4 Nov)"},
+            
+            # --- KLUSTER 3: SENTIMEN KRITIS & KONTROVERSI (Mendongkrak Negatif agar tidak flat) ---
+            {"q": "\"keracunan\" (MBG OR \"makan gratis\" OR \"uji coba\")", "mode": "top", "label": "Keracunan MBG (Top Kontroversi)"},
+            {"q": "\"makanan basi\" OR \"sampah\" OR \"jorok\" (MBG OR \"makan siang\")", "mode": "top", "label": "Kualitas Makanan (Top Kritis)"},
+            
+            # --- KLUSTER 4: TARGET 14 - 30 HARI TERAKHIR (DATE WINDOW OKTOBER) ---
+            {"q": "MBG OR \"makan bergizi gratis\" since:2026-10-05 until:2026-10-28", "mode": "top", "label": "MBG (Bulan Lalu 5-28 Okt)"},
+            {"q": "\"badan gizi nasional\" OR BGN (gizi OR prabowo OR anggaran)", "mode": "top", "label": "BGN & Prabowo (Top Populer)"},
+            {"q": "stunting (MBG OR \"makan bergizi\" OR \"makan siang\")", "mode": "top", "label": "Stunting & Gizi (Top Populer)"},
+            {"q": "\"dapur satuan pelayanan\" OR \"simulasi MBG\" OR \"katering MBG\"", "mode": "top", "label": "Logistik Dapur (Top Populer)"}
+        ]
+        
+        print(f"🎯 Total Target: {len(mbg_targets)} query MBG.")
+        print(f"⚙️  Parameter Aman: Max {scrolls_per_trend} scroll/query dengan jeda acak manusiawi.\n")
 
-        # LANGKAH 2: Looping Setiap Trend dan Intercept Data
-        for trend in trends[:max_trends_to_scrape]:
-            current_trend = trend
+        # Looping Setiap Target MBG
+        for idx, target in enumerate(mbg_targets[:max_trends_to_scrape], 1):
+            query = target["q"]
+            mode = target["mode"]
+            label = target["label"]
+            current_trend = label
+            
             print(f"\n=======================================================")
-            print(f"Mulai menyedot data untuk tren: {trend}")
+            print(f"[{idx}/{len(mbg_targets)}] Target: {label}")
+            print(f"      Query : {query}")
+            print(f"      Mode  : {'🔴 LATEST / LIVE (7-14 Hari)' if mode == 'live' else '⭐ TOP POPULER (30 Hari+)'}")
             print(f"=======================================================")
             
-            search_url = f"https://x.com/search?q={urllib.parse.quote(trend)}&src=trend_click"
+            if mode == "live":
+                search_url = f"https://x.com/search?q={urllib.parse.quote(query)}&src=typed_query&f=live"
+            else:
+                search_url = f"https://x.com/search?q={urllib.parse.quote(query)}&src=typed_query"
+                
             page.goto(search_url)
-            time.sleep(5) # Tunggu loading awal
+            time.sleep(random.uniform(5.0, 7.5)) # Loading awal wajar
             
-            for i in range(scrolls_per_trend): # Lakukan scroll untuk memancing lebih banyak data
-                print(f"Scroll {i+1}/{scrolls_per_trend} untuk tren '{trend}'...")
-                page.evaluate("window.scrollBy(0, 2000)")
-                # Jeda acak 3 hingga 6 detik antar scroll agar terlihat seperti manusia asli membaca
-                time.sleep(random.uniform(3.0, 6.0)) 
+            # Verifikasi apakah akun diminta verifikasi / checkpoint
+            if "account/access" in page.url or "i/flow/login" in page.url:
+                print("\n🚨 [PERHATIAN] Twitter meminta verifikasi akun / login ulang.")
+                print("   Browser tetap dibuka. Silakan lakukan verifikasi secara manual jika diminta.")
+                input("Tekan ENTER di terminal ini jika sudah selesai verifikasi di browser...")
             
-            # Jeda acak yang lumayan lama saat berpindah tren agar tidak terkena Rate Limit Twitter
-            print(f"Selesai dengan '{trend}'. Istirahat sejenak seperti manusia...")
-            time.sleep(random.uniform(7.0, 15.0))
+            stale_scroll_count = 0
             
-            # --- TAMBAHAN: SIMPAN DATA SEMENTARA (INCREMENTAL SAVE & GZIP ON THE FLY) ---
+            for i in range(scrolls_per_trend):
+                # PENGAMAN 1: Cek apakah terkena Rate Limit 429
+                if rate_limit_flag:
+                    print("🛑 [SAFETY PAUSE] Berhenti sejenak selama 60 detik untuk pemulihan...")
+                    time.sleep(60)
+                    rate_limit_flag = False
+                    print("✅ Masa cool-down selesai. Melanjutkan ke target berikutnya...")
+                    break
+                
+                payload_count_before = len(intercepted_data)
+                
+                # PENGAMAN 2: Simulasi Scroll Manusia (Jarak acak, bukan angka kaku)
+                scroll_pixels = random.randint(750, 1350)
+                page.evaluate(f"window.scrollBy(0, {scroll_pixels})")
+                
+                # Simulasi sesekali membaca (15% kemungkinan scroll balik ke atas sedikit)
+                if random.random() < 0.15:
+                    time.sleep(random.uniform(0.6, 1.2))
+                    page.evaluate(f"window.scrollBy(0, -{random.randint(150, 300)})")
+                
+                # Jeda acak manusiawi (4.0 - 6.5 detik)
+                time.sleep(random.uniform(4.0, 6.5))
+                
+                # PENGAMAN 3: Deteksi Ujung Halaman (Early Exit jika cuitan sudah habis)
+                payload_count_after = len(intercepted_data)
+                if payload_count_after == payload_count_before:
+                    stale_scroll_count += 1
+                    if stale_scroll_count >= 4:
+                        print(f"  [i] Sudah mencapai ujung cuitan untuk query ini ({i+1} scroll). Melangkah ke target berikutnya...")
+                        break
+                else:
+                    stale_scroll_count = 0
+                    print(f"  Scroll {i+1}/{scrolls_per_trend} -> [{label}] | Total payload tersadap: {payload_count_after}")
+            
+            # PENGAMAN 4: Jeda Santai Antar-Target (12 - 20 detik seperti manusia mencari hal baru)
+            sleep_between = random.uniform(12.0, 20.0)
+            print(f"  [V] Selesai dengan '{label}'. Istirahat santai {sleep_between:.1f} detik...")
+            time.sleep(sleep_between)
+            
+            # Auto-save berkala ke file terkompresi
             if intercepted_data:
-                temp_filename = os.path.join(raw_dir, f"twitter-batch-IN_PROGRESS.json.gz")
+                temp_filename = os.path.join(raw_dir, "twitter-batch-IN_PROGRESS.json.gz")
                 with gzip.open(temp_filename, "wt", encoding="utf-8") as f:
                     json.dump(intercepted_data, f, indent=4, ensure_ascii=False)
-                print(f"[+] Data sementara disimpan terkompresi. Total: {len(intercepted_data)} payload.")
             
         print(f"\n=======================================================")
-        print(f"SELESAI KESELURUHAN! Berhasil menyadap {len(intercepted_data)} payload GraphQL.")
+        print(f"🎉 SELESAI DENGAN AMAN! Berhasil menyadap {len(intercepted_data)} payload GraphQL.")
         print(f"=======================================================")
         
         browser.close()
         
-        # Simpan hasil sadapan ke file lokal (GZIP On The Fly)
+        # Simpan hasil sadapan akhir
         if intercepted_data:
             timestamp = datetime.now().strftime("%Y%m%d_%H%M%S")
             filename = os.path.join(raw_dir, f"twitter-batch-{timestamp}.json.gz")
-            
             with gzip.open(filename, "wt", encoding="utf-8") as f:
                 json.dump(intercepted_data, f, indent=4, ensure_ascii=False)
-                
-            print(f"Data Batch berhasil disimpan terkompresi di: {filename}")
+            print(f"\n[SUKSES] File Batch MBG tersimpan di:\n👉 {filename}")
         else:
-            print("Gagal menyadap API. Twitter mungkin mengubah URL endpoint-nya atau API tidak dipanggil.")
+            print("[-] Tidak ada data tersadap. Periksa cookies di .env.")
 
 if __name__ == "__main__":
-    # LIMITS MODERAT UNTUK KEAMANAN AKUN (TETAP MASS-SCRAPING)
-    # 25 Trends x 25 Scrolls. Cukup aman tapi tetap ribuan data per siklus.
-    scrape_twitter_batch(max_trends_to_scrape=25, scrolls_per_trend=25)
+    # max_trends_to_scrape: 16 target MBG lengkap
+    # scrolls_per_trend: 25 scroll per query (aman, cepat, dan menyerap ratusan tweet)
+    scrape_twitter_batch(max_trends_to_scrape=16, scrolls_per_trend=25)

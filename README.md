@@ -1,48 +1,120 @@
-# NoLimit Narrative Trend Dashboard (Data Engineering)
+# Narrative Trend Dashboard
 
-Ini adalah *codebase* utama untuk subsistem Data Engineering & Backend dari proyek **NoLimit Narrative Trend Dashboard**. Repositori ini berisi arsitektur Pipa Data (Data Pipeline) lengkap dan API Backend berbasis FastAPI yang dikerjakan hingga **Sprint 6**.
-
-## 🏗️ Arsitektur Sistem (Sprint 1 - 6)
-
-Sistem ini terbagi menjadi dua komponen utama:
-
-### 1. Data Pipeline (Scraper & Parser)
-- **Playwright Batch Interceptor**: Menangkap respons GraphQL (JSON) secara langsung dari peramban (Headless X/Twitter) tanpa perlu kredensial API resmi.
-- **Smart 3-Tier Validator**: Sistem penyaringan otomatis menggunakan RegEx untuk membuang konten NSFW, Perjudian (Slot), dan Spam.
-- **O(1) Deduplication System**: Mencegah data ganda (*duplicate*) masuk ke dalam Datalake dengan memori super hemat (Hash Map).
-- **Auto-Pipeline Scheduler**: Berjalan secara mandiri (*background job*) di jam-jam tertentu (00:30, 02:00, ..., 23:00) untuk memanen data secara otomatis dan memindahkannya ke MinIO Datalake.
-
-### 2. Backend API (FastAPI)
-- **FastAPI Modular**: Struktur folder skala korporasi (`routes`, `models`, `schemas`, `core`).
-- **PostgreSQL & Alembic**: Skema *database* berelasi yang dikelola sepenuhnya oleh Alembic Migration. Siap dieksekusi dengan `alembic upgrade head`. Termasuk indeks performa tinggi pada `tweet_id` dan `created_at`.
-- **Search & Dashboard Endpoints**: API performa tinggi yang merangkum miliaran baris data menjadi analitik tren (Volume, Sentimen, Top Keyword).
-- **In-Memory Caching (TTL)**: Mencegah *Database Crash* ketika *Dashboard* memuat ulang grafik. Data *cache* bertahan selama 60 detik sebelum memuat ulang kueri SQL.
-- **Authentication**: Sistem Login JWT dengan enkripsi *Bcrypt* untuk keamanan Dasbor UI.
+Platform analitik intelijen media sosial (*Social Media Intelligence & Narrative Analytics*) berbasis arsitektur **Medallion Data Lakehouse**, **FastAPI**, dan **React TypeScript** untuk memantau tren topik, dinamika sentimen publik, serta jejaring entitas (*Knowledge Graph*) secara *real-time*.
 
 ---
 
-## 🚀 Cara Instalasi & Menjalankan (Untuk Tim Internal)
+## Fitur Utama
 
-### 1. Inisialisasi Database (PostgreSQL & Neo4J)
-Pastikan Docker Desktop menyala, lalu jalankan:
-```bash
-cd Backend
-docker-compose up -d
-```
-Setelah *database* menyala, bangun seluruh struktur tabel PostgreSQL dengan Alembic:
-```bash
-python -m alembic upgrade head
+* **Multi-Platform Data Ingestion & Processing (`scrapers/` & `pipeline/`)**
+  * Ekstraksi aliran data media sosial menggunakan *Playwright Network Interceptor* dengan mekanisme *rate-limit protection*.
+  * Validasi konten otomatis 3-lapis (*Smart Content Validator*) untuk menyaring spam dan konten tidak relevan.
+  * Deduplikasi berbasis *hash-set* `O(1)` sebelum penyimpanan ke *Data Lake* (MinIO S3).
+* **High-Performance REST API (`backend/`)**
+  * Dibangun dengan **FastAPI**, **SQLAlchemy**, dan **Alembic** untuk pengelolaan skema *database* **PostgreSQL**.
+  * Integrasi **Neo4j Graph Database** untuk pemetaan relasi aktor, organisasi, dan isu (*Knowledge Graph*).
+  * *In-Memory TTL Caching* untuk akselerasi respons agregasi analitik lintas rentang waktu (7 Hari, 14 Hari, 30 Hari, dan Sepanjang Waktu).
+  * Autentikasi pengguna menggunakan standar **OAuth2 & JWT (Bcrypt)**.
+* **Interactive Analytics Dashboard (`frontend/`)**
+  * Antarmuka modern berbasis **React 18**, **TypeScript**, **Vite**, dan **Tailwind CSS**.
+  * Visualisasi tren percakapan, distribusi sentimen per platform, daftar *top influencers/topics*, dan eksplorasi *Knowledge Graph* interaktif.
+
+---
+
+## Struktur Repositori
+
+```text
+├── backend/                  # Layanan REST API (FastAPI, SQLAlchemy, Alembic)
+│   ├── alembic/              # Migrasi skema database PostgreSQL
+│   ├── app/
+│   │   ├── api/routes/       # Endpoint API (auth, dashboard, sentiment, topics, entities, graph, posts, search)
+│   │   ├── core/             # Konfigurasi environment, koneksi DB, autentikasi JWT, & TTL cache
+│   │   └── schemas/          # Skema validasi Pydantic
+│   ├── models.py             # Model ORM SQLAlchemy
+│   └── requirements.txt      # Dependensi Python Backend
+├── frontend/                 # Aplikasi Web Dashboard (React, TypeScript, Vite, Tailwind CSS)
+│   ├── src/
+│   │   ├── content/          # Halaman analitik (Overview, SummaryCards, KnowledgeGraph, Auth, Profile)
+│   │   ├── layouts/          # Tata letak aplikasi & navigasi utama
+│   │   └── services/         # Klien HTTP API & manajemen token autentikasi
+│   └── package.json          # Dependensi Node.js Frontend
+├── pipeline/                 # Worker pemrosesan data, parser, validator, & sinkronisasi MinIO S3
+├── scrapers/                 # Modul akuisisi data media sosial berbasis Playwright
+├── chrome_extension/         # Ekstensi browser pendukung pengumpulan tautan konten
+├── infrastructure/           # Konfigurasi Docker Compose untuk layanan pendukung
+├── docs/                     # Dokumentasi spesifikasi API & kamus database (Database Dictionary)
+├── run-backend.bat           # Skrip otomatis menjalankan server Backend (Windows)
+└── run-frontend.bat          # Skrip otomatis menjalankan server Frontend (Windows)
 ```
 
-### 2. Menjalankan Backend API
-Buka terminal di folder `Backend` dan pasang *Virtual Environment*:
+---
+
+## Panduan Menjalankan Aplikasi
+
+### Prasyarat
+* **Python** 3.10+
+* **Node.js** 18+ & **npm**
+* **PostgreSQL** 15+ (Lokal / Server Terpusat)
+
+### Opsi A: Menjalankan Cepat (Windows One-Click Runner)
+1. **Konfigurasi Environment Backend:**
+   Salin `backend/.env.example` menjadi `backend/.env` dan sesuaikan `DATABASE_URL` dengan kredensial PostgreSQL Anda.
+2. **Jalankan Backend:**
+   Klik dua kali atau jalankan lewat terminal:
+   ```cmd
+   .\run-backend.bat
+   ```
+3. **Jalankan Frontend:**
+   Buka terminal baru dan jalankan:
+   ```cmd
+   .\run-frontend.bat
+   ```
+
+### Opsi B: Menjalankan Secara Manual
+
+#### 1. Backend (FastAPI)
 ```bash
+cd backend
 python -m venv .venv
 .venv\Scripts\activate
 pip install -r requirements.txt
+
+# Salin dan sesuaikan konfigurasi environment
+copy .env.example .env
+
+# Jalankan server pada port 8000
+uvicorn app.main:app --reload --host 0.0.0.0 --port 8000
 ```
-Salin `.env.example` menjadi `.env` lalu nyalakan server:
+* **API Base URL:** `http://localhost:8000`
+* **Swagger UI (Dokumentasi Interaktif):** `http://localhost:8000/docs`
+
+#### 2. Frontend (React + Vite)
 ```bash
-uvicorn app.main:app --reload --host 127.0.0.1 --port 8000
+cd frontend
+npm install
+
+# Salin konfigurasi environment
+copy .env.example .env
+
+# Jalankan development server pada port 5173
+npm run dev
 ```
-Buka Browser ke: **http://127.0.0.1:8000/docs** untuk melihat Dokumentasi API interaktif (Swagger UI).
+* **Web Dashboard:** `http://localhost:5173`
+
+---
+
+## Ringkasan Endpoint API Utama
+
+| Kategori | Method & Endpoint | Deskripsi |
+| :--- | :--- | :--- |
+| **Authentication** | `POST /api/v1/auth/login` | Autentikasi pengguna dan pembuatan token JWT |
+| **Authentication** | `POST /api/v1/auth/register` | Registrasi akun pengguna baru |
+| **Dashboard** | `GET /api/v1/dashboard/overview` | Ringkasan metrik utama, tren percakapan, & distribusi platform |
+| **Sentiment** | `GET /api/v1/sentiment/summary` | Persentase sentimen positif, netral, dan negatif |
+| **Topics & Entities** | `GET /api/v1/topics/top` | Daftar topik dan isu dengan volume percakapan tertinggi |
+| **Knowledge Graph** | `GET /api/v1/graph/network` | Data *nodes* dan *edges* untuk visualisasi jejaring relasi |
+| **Search & Posts** | `GET /api/v1/search` | Pencarian unggahan berdasarkan kata kunci, platform, dan sentimen |
+
+Dokumentasi teknis lebih lanjut tersedia di folder [`docs/`](./docs/):
+* [API Documentation](./docs/API_Documentation.md)
+* [Database Dictionary](./docs/Database_Dictionary.md)
