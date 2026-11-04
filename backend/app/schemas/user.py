@@ -3,7 +3,7 @@ from typing import Optional
 
 # Shared properties
 class UserBase(BaseModel):
-    username: str
+    username: Optional[str] = None
     email: Optional[str] = None
     full_name: Optional[str] = None
 
@@ -32,3 +32,9 @@ class Token(BaseModel):
 
 class TokenPayload(BaseModel):
     sub: Optional[str] = None
+
+# Login schema
+class LoginRequest(BaseModel):
+    email: Optional[str] = None
+    username: Optional[str] = None
+    password: str

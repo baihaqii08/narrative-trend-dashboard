@@ -1,0 +1,2291 @@
+ 
+ 
+ 
+ 
+ 
+ 
+PRODUCT REQUIREMENTS DOCUMENT
+ 
+\(PRD\
+ 
+Narrative Trend Dashboard
+ 
+ 
+PT NoLimit Indonesia
+ 
+Versi 1.0 
+-
+ 
+28 Agustus 2026
+ 
+Durasi Proyek: 11 Agustus 
+
+ 
+9 November 2026
+ 
+ 
+ 
+Daftar Isi
+ 
+1.
+ 
+Ringkasan Eksekutif
+ 
+2.
+ 
+Latar Belakang
+ 
+3.
+ 
+Tujuan Proyek
+ 
+4.
+ 
+Target Pengguna
+ 
+5.
+ 
+Ruang Lingkup
+ 
+\(Scope\
+ 
+6.
+ 
+Fitur Utama
+ 
+7.
+ 
+Kebutuhan Non
+-
+Fungsional
+ 
+8.
+ 
+Kebutuhan Desain
+ 
+9.
+ 
+Arsitektur Sistem
+ 
+10.
+ 
+Technology Stack
+ 
+11.
+ 
+Data Model
+ 
+12.
+ 
+API Endpoints
+ 
+13.
+ 
+Tim Proyek & Pembagian Tanggung Jawab
+ 
+14.
+ 
+Timeline Proyek
+ 
+15.
+ 
+Visualisasi Timeline
+ 
+16.
+ 
+Risiko & Mitigasi
+ 
+17.
+ 
+Kriteria & Metrik Keberhasilan
+ 
+18.
+ 
+Lampiran
+ 
+ 
+ 
+1. Ringkasan Eksekutif
+ 
+Narrative Trend Dashboard adalah platform analitik berbasis web yang dirancang untuk 
+memantau, menganalisis, dan memvisualisasikan tren narasi di media sosial \(X/Twitter, 
+TikTok, Instagram\Platform ini mengintegrasikan teknologi 
+web scraping, pemrosesan 
+bahasa alami \(NLP\berbasis model IndoBERT dan Hugging Face, serta visualisasi Knowledge 
+Graph interaktif untuk memetakan relasi antar topik dan entitas.
+ 
+Dashboard menyajikan insight berupa analisis sentimen, identifikasi topik tre
+nding, ekstraksi 
+entitas, dan pemetaan relasi 
+
+ 
+semuanya dalam rentang waktu 7 hari terakhir. Data 
+dikumpulkan secara periodik melalui data pipeline otomatis, diproses menggunakan model 
+NLP, dan disajikan dalam antarmuka dashboard yang intuitif.
+ 
+Proyek ini
+ 
+dikembangkan oleh tim magang yang terdiri dari 6 orang \(2 Data Engineer, 2 Data 
+Scientist, 1 UI/UX Designer, 1 Front
+-
+End Developer\dengan durasi pengerjaan 3 bulan \(11 
+Agustus 
+
+ 
+9 November 2026\Dashboard ditujukan untuk pengguna internal PT NoLimit 
+Ind
+onesia sebagai alat bantu analisis tren narasi media sosial.
+ 
+2. Latar Belakang
+ 
+PT NoLimit Indonesia memiliki kebutuhan untuk memantau dan menganalisis tren narasi 
+yang berkembang di media sosial. Saat ini, volume informasi yang beredar di platform 
+seperti 
+X \(Twitter\TikTok, dan Instagram sangat besar dan bergerak cepat. Tanpa alat 
+analitik yang tepat, sulit untuk mengidentifikasi pola narasi dominan, memahami sentimen 
+publik, serta memetakan relasi antar topik dan entitas yang terlibat.
+ 
+Proyek Narrative T
+rend Dashboard dikembangkan untuk menjawab kebutuhan tersebut 
+
+ 
+sebuah dashboard analitik berbasis web yang mampu mengumpulkan data dari media sosial, 
+mengolahnya menggunakan model NLP \(Natural Language Processing\dan menyajikan 
+insight berupa visualisas
+i tren narasi lengkap dengan Knowledge Graph interaktif.
+ 
+3. Tujuan Proyek
+ 
+1. Membangun data pipeline yang mampu mengumpulkan data dari platform X, TikTok, dan 
+Instagram secara periodik.
+ 
+2. Mengolah data teks \(caption/post\ menggunakan model NLP untuk mengh
+asilkan analisis 
+sentimen, topik, dan ekstraksi entitas.
+ 
+3. Menyajikan hasil analisis dalam bentuk dashboard interaktif yang mencakup grafik tren, 
+distribusi sentimen, dan Knowledge Graph.
+ 
+4. Menyediakan kemampuan filter berdasarkan platform, rentang waktu
+, topik, dan 
+sentimen.
+ 
+4. Target Pengguna
+ 
+Dashboard ini ditujukan untuk pengguna internal PT NoLimit Indonesia, khususnya tim analis 
+dan manajemen yang membutuhkan insight cepat mengenai tren narasi yang sedang 
+berkembang di media sosial.
+ 
+5. Ruang Lingkup 
+\(Scope\
+ 
+5.1 Dalam Scope
+ 
+Area
+ 
+Deskripsi
+ 
+Data Collection
+ 
+Scraping data dari X, TikTok, dan Instagram 
+\(caption/teks, metadata engagement\
+ 
+Text Processing
+ 
+Sentiment analysis, topic modeling, named entity 
+recognition \(NER\
+ 
+Knowledge Graph
+ 
+Visualisasi relasi 
+antar topik, entitas, dan narasi 
+dalam bentuk graph interaktif
+ 
+Dashboard
+ 
+Antarmuka web untuk menampilkan analitik tren 
+narasi dengan kemampuan filter dan eksplorasi 
+data
+ 
+Backend API
+ 
+REST API untuk menyajikan data terproses ke 
+frontend
+ 
+Autentikasi
+ 
+Sistem
+ 
+login sederhana untuk akses internal
+ 
+ 
+5.2 Di Luar Scope
+ 
+Area
+ 
+Keterangan
+ 
+Streaming real
+-
+time
+ 
+Dashboard menggunakan pendekatan batch 
+processing periodik
+ 
+Aplikasi mobile
+ 
+Dashboard dioptimasi untuk penggunaan 
+Desktop
+ 
+Multi
+-
+tenant / SaaS
+ 
+Tidak ada 
+pemisahan tenant; single
+-
+organization
+ 
+Pemrosesan gambar
+ 
+Bersifat eksplorasi tambahan jika waktu 
+memungkinkan
+ 
+Replikasi penuh National Dashboard
+ 
+Fitur yang diadopsi disesuaikan dengan skala dan 
+durasi proyek
+ 
+ 
+6. Fitur Utama
+ 
+6.1 Data Collection & Pipeline
+ 
+F
+-
+01: Social Media Data Scraper
+ 
+Mengumpulkan data dari X \(Twitter\, TikTok, dan Instagram.
+ 
+
+ 
+Data yang dikumpulkan: teks caption/post, username author, timestamp, metrik 
+engagement \(likes, comments, shares, views/plays\dan hashtag.
+ 
+
+ 
+Proses scraping berjala
+n secara periodik menggunakan mekanisme intercept \(Mitmproxy 
++ Frida + Appium\untuk TikTok dan Instagram.
+ 
+
+ 
+Data mentah disimpan ke MinIO \(object storage\dalam format JSON.
+ 
+F
+-
+02: Data Ingestion Pipeline
+ 
+Data mentah dari MinIO diproses melalui pipeline yang
+ 
+di
+-
+orkestrasi menggunakan 
+Beanstalkd sebagai message queue.
+ 
+
+ 
+Normalisasi format data antar platform.
+ 
+
+ 
+Deduplikasi data.
+ 
+
+ 
+Penyimpanan ke PostgreSQL \(data terstruktur\dan Elasticsearch \(untuk indexing dan 
+pencarian cepat\
+ 
+6.2 NLP & Analytics Engine
+ 
+F
+-
+03: Sen
+timent Analysis
+ 
+
+ 
+Menggunakan model IndoBERT yang di
+-
+fine
+-
+tune pada dataset sentimen Bahasa 
+Indonesia.
+ 
+
+ 
+Klasifikasi sentimen: Positif, Negatif, dan Netral.
+ 
+
+ 
+Setiap post yang masuk pipeline secara otomatis diberi label sentimen.
+ 
+F
+-
+04: Topic Modeling
+ 
+
+ 
+Menggunakan
+ 
+model pre
+-
+trained dari Hugging Face \(contoh: BERTopic\
+ 
+
+ 
+Mengelompokkan post ke dalam klaster topik secara otomatis.
+ 
+
+ 
+Menghasilkan daftar trending topics berdasarkan frekuensi dan engagement.
+ 
+F
+-
+05: Named Entity Recognition \(NER\
+ 
+
+ 
+Menggunakan model NER pre
+-
+tr
+ained dari Hugging Face yang mendukung Bahasa 
+Indonesia.
+ 
+
+ 
+Mengekstrak entitas kunci dari teks: Orang, Organisasi, Lokasi, Event/Peristiwa.
+ 
+
+ 
+Hasil ekstraksi digunakan sebagai node dalam Knowledge Graph.
+ 
+F
+-
+06: Relation Extraction
+ 
+
+ 
+Mendeteksi relasi antar 
+entitas berdasarkan co
+-
+occurrence \(kemunculan bersama dalam 
+satu post atau topik\
+ 
+
+ 
+Menghasilkan edge \(hubungan\untuk membangun Knowledge Graph.
+ 
+6.3 Knowledge Graph
+ 
+F
+-
+07: Knowledge Graph Engine
+ 
+
+ 
+Node: Topik, Entitas \(Orang/Organisasi/Lokasi\ Hashtag.
+ 
+
+ 
+Edge:
+ 
+Relasi antar node berdasarkan co
+-
+occurrence, asosiasi sentimen, dan frekuensi.
+ 
+
+ 
+Data graph disimpan dalam Neo4J \(Graph Database\ yang dioptimasi khusus untuk query 
+dan traversal graph.
+ 
+
+ 
+API endpoint menyediakan data graph dalam format yang siap divisualisas
+ikan.
+ 
+F
+-
+08: Knowledge Graph Visualization
+ 
+
+ 
+Visualisasi interaktif dalam bentuk force
+-
+directed graph.
+ 
+
+ 
+Pengguna dapat: klik node untuk melihat detail, zoom in/out, filter berdasarkan jenis 
+entitas, dan menyesuaikan rentang waktu.
+ 
+
+ 
+Node di
+-
+size berdasarkan frek
+uensi kemunculan; edge di
+-
+weight berdasarkan kekuatan 
+relasi.
+ 
+6.4 Dashboard
+ 
+F
+-
+09: Overview Page
+ 
+
+ 
+Ringkasan tren narasi untuk periode yang dipilih \(default: 7 hari terakhir\
+ 
+
+ 
+Metrik utama: total post teranalisis, distribusi platform, sentimen keseluruhan.
+ 
+
+ 
+Da
+ftar Top Trending Topics dan Top Entities.
+ 
+F
+-
+10: Sentiment Analysis Page
+ 
+
+ 
+Grafik distribusi sentimen \(Positif/Negatif/Netral\per hari.
+ 
+
+ 
+Breakdown sentimen per platform \(X vs TikTok vs Instagram\
+ 
+
+ 
+Daftar post dengan sentimen paling ekstrem \(sangat 
+positif/sangat negatif\
+ 
+F
+-
+11: Topic Explorer Page
+ 
+
+ 
+Daftar topik trending beserta jumlah post dan rata
+-
+rata engagement.
+ 
+
+ 
+Timeline kemunculan topik \(kapan topik mulai viral, kapan menurun\
+ 
+
+ 
+Drill
+-
+down ke post
+-
+post individual dalam sebuah topik.
+ 
+F
+-
+12: Knowledg
+e Graph Page
+ 
+
+ 
+Visualisasi Knowledge Graph interaktif \(lihat F
+-
+08\
+ 
+
+ 
+Panel detail di sisi kanan saat node diklik.
+ 
+
+ 
+Kontrol filter: jenis entitas, minimum frekuensi, rentang waktu.
+ 
+F
+-
+13: Filter & Navigation
+ 
+
+ 
+Filter global: platform \(X/TikTok/Instagram\, rentang 
+tanggal, kata kunci.
+ 
+
+ 
+Sidebar navigasi antar halaman.
+ 
+
+ 
+Responsif untuk layar desktop \(resolusi minimum 1280px\.
+ 
+F
+-
+14: Autentikasi
+ 
+
+ 
+Halaman login sederhana untuk akses internal.
+ 
+
+ 
+Satu level akses \(semua pengguna memiliki hak yang sama\
+ 
+6.5 Fitur Tambahan \(Jika
+ 
+Waktu Memungkinkan\
+ 
+F
+-
+15: Image Text Extraction \(Eksplorasi\
+ 
+Mengekstrak teks dari gambar/thumbnail menggunakan model OCR. Teks hasil ekstraksi 
+dimasukkan ke pipeline NLP yang sama.
+ 
+F
+-
+16: Export Data
+ 
+Kemampuan mengekspor data dashboard ke format CSV atau 
+PDF.
+ 
+7. Kebutuhan Non
+-
+Fungsional
+ 
+7.1 Performa
+ 
+Parameter
+ 
+Target
+ 
+Response time API \(rata
+-
+rata\
+ 
+
+ 
+Waktu muat halaman dashboard \(initial load\
+ 
+
+ 
+
+ 
+
+ 
+Throughput pipeline NLP
+ 
+
+ 
+Waktu pemrosesan batch harian
+ 
+
+ 
+ 
+7.2 Keamanan
+ 
+Aspek
+ 
+Implementasi
+ 
+Autentikasi
+ 
+Session
+-
+based authentication dengan 
+login/password
+ 
+Password Storage
+ 
+Hashing menggunakan bcrypt \(tidak menyimpan 
+plain text\
+ 
+Akses Jaringan
+ 
+Dashboard
+ 
+hanya dapat diakses dari jaringan 
+internal NoLimit
+ 
+API Protection
+ 
+Rate limiting pada endpoint API untuk mencegah 
+penyalahgunaan
+ 
+Data Transmission
+ 
+HTTPS untuk seluruh komunikasi frontend
+-
+backend
+ 
+ 
+7.3 Skalabilitas
+ 
+Parameter
+ 
+Kapasitas
+ 
+Volume data harian
+ 
+Mampu menampung hingga 10.000 post per hari
+ 
+Retensi data
+ 
+Minimum 3 bulan data historis
+ 
+Concurrent users
+ 
+Mendukung hingga 10 pengguna secara 
+bersamaan
+ 
+Storage
+ 
+MinIO untuk raw data, PostgreSQL untuk data 
+terstruktur \(auto
+-
+scalable\
+ 
+ 
+7.4 Kompatibilitas
+ 
+Aspek
+ 
+Spesifikasi
+ 
+Browser
+ 
+Google Chrome, Mozilla Firefox, Microsoft Edge 
+\(versi terbaru\
+ 
+Resolusi layar
+ 
+Minimum 1280 × 720 px \(optimasi Desktop\
+ 
+Sistem Operasi
+ 
+Platform
+-
+agnostic \(web
+-
+based\
+ 
+ 
+7.5 Ketersediaan & Pemeliharaan
+ 
+
+ 
+Sistem berjalan di lingkungan
+ 
+development/staging selama masa proyek.
+ 
+
+ 
+Data pipeline \(scraper\berjalan secara periodik sesuai jadwal yang dikonfigurasi.
+ 
+
+ 
+Monitoring dasar untuk memastikan pipeline dan API berjalan normal.
+ 
+
+ 
+Logging pada setiap komponen \(scraper, pipeline, API\ untuk kebu
+tuhan debugging.
+ 
+8. Kebutuhan Desain
+ 
+8.1 Prinsip Desain
+ 
+1. Data
+-
+First 
+
+ 
+Desain mengutamakan keterbacaan data dan visualisasi. Setiap elemen 
+visual harus memiliki tujuan informatif yang jelas.
+ 
+2. Clean & Professional 
+
+ 
+Tampilan bersih, tidak berlebihan, dan
+ 
+memberikan kesan 
+profesional sesuai standar produk analitik enterprise.
+ 
+3. Konsistensi 
+
+ 
+Penggunaan komponen, spacing, tipografi, dan warna yang konsisten di 
+seluruh halaman dashboard.
+ 
+4. Interaktif 
+
+ 
+Elemen visual \(chart, graph, tabel\ mendukung 
+interaksi pengguna seperti 
+hover tooltip, klik untuk detail, dan zoom.
+ 
+8.2 Panduan Visual
+ 
+Aspek
+ 
+Spesifikasi
+ 
+Tema
+ 
+Dark Mode sebagai tema utama \(optimal untuk 
+visualisasi data padat\dengan opsi Light Mode
+ 
+Tipografi
+ 
+Sans
+-
+serif modern \(Inter / Roboto / sis
+tem font 
+Tailwind\
+ 
+Skema Warna Sentimen
+ 
+Hijau \(Positif\Merah \(Negatif\Abu
+-
+abu/Biru 
+\(Netral\
+ 
+Skema Warna Platform
+ 
+Biru \(Twitter/X\Hitam/Pink \(TikTok\ 
+Ungu/Orange \(Instagram\
+ 
+Ikonografi
+ 
+Ikon minimalis dan konsisten \(Heroicons / Lucide 
+Icons\
+ 
+Spacing
+ 
+Mengikuti sistem grid 4px/8px dari Tailwind CSS
+ 
+ 
+8.3 Komponen Dashboard Utama
+ 
+Komponen
+ 
+Jenis Visualisasi
+ 
+Halaman
+ 
+Statistik Ringkasan
+ 
+Card dengan angka besar + ikon
+ 
+Overview
+ 
+Tren Sentimen
+ 
+Line chart \(time series\
+ 
+Overview, Sentiment
+ 
+Distribusi 
+Sentimen
+ 
+Donut/Pie chart
+ 
+Sentiment
+ 
+Breakdown per Platform
+ 
+Stacked bar chart
+ 
+Sentiment
+ 
+Trending Topics
+ 
+Horizontal bar chart + tabel 
+sortable
+ 
+Topics
+ 
+Timeline Topik
+ 
+Area chart \(time series\
+ 
+Topics
+ 
+Knowledge Graph
+ 
+Force
+-
+directed network graph 
+\(D3.js/Cytoscape.js\
+ 
+Knowledge Graph
+ 
+Daftar Post
+ 
+Tabel dengan paginasi, search, 
+dan filter
+ 
+Semua halaman \(drill
+-
+down\
+ 
+Filter Global
+ 
+Dropdown \(platform\date 
+range picker, search input
+ 
+Sidebar / Header
+ 
+ 
+8.4 Referensi Desain
+ 
+
+ 
+Acuan utama: National 
+Dashboard 
+-
+ 
+Revisi Sidebar Submenu \(PT NoLimit Indonesia\
+diadaptasi sesuai skala proyek.
+ 
+
+ 
+Inspirasi tambahan: Dashboard analitik modern seperti Grafana, Metabase, dan Google 
+Analytics.
+ 
+9. Arsitektur Sistem
+ 
+Sistem terdiri dari 3 layer utama:
+ 
+
+ 
+Data Collectio
+n Layer 
+
+ 
+
+
+ 
+
+ 
+Data Processing Layer 
+
+ 
+
+NLP Pipeline \(IndoBERT Sentiment, HF Topics, HF NER, Co
+-
+
+ 
+PostgreSQL, Elasticsearch & Neo4J
+ 
+
+ 
+Application Layer 
+
+ 
+
+Zustand, Recharts, D3.js/Cytoscape.js\
+ 
+10. Technology Stack
+ 
+10.1 Data Engineering & Backend
+ 
+Komponen
+ 
+Teknologi
+ 
+Keterangan
+ 
+Bahasa Pemrograman
+ 
+Python 3.10+
+ 
+Untuk scraper, pipeline, NLP, 
+dan backend API
+ 
+Backend Framework
+ 
+FastAPI
+ 
+REST API untuk menyajikan data 
+ke frontend
+ 
+Message Queue
+ 
+Beanstalkd
+ 
+Orkestrasi job scraping dan 
+processing
+ 
+Database Relasional
+ 
+PostgreSQL
+ 
+Penyimpanan data terstruktur 
+dan user
+ 
+Graph Database
+ 
+Neo4J
+ 
+Penyimpanan dan analitik 
+Knowledge Graph \(node & 
+edge\
+ 
+Search Engine
+ 
+Elasticsearch
+ 
+Full
+-
+text search, aggregasi, dan 
+query analitik
+ 
+Object Storage
+ 
+MinIO
+ 
+Penyimpanan data mentah 
+\(JSON, media\
+ 
+ORM / Migration
+ 
+SQLAlchemy + 
+Alembic
+ 
+Manajemen skema database
+ 
+ 
+ 
+10.2 Data Science & NLP
+ 
+Komponen
+ 
+Teknologi
+ 
+Keterangan
+ 
+Sentiment Analysis
+ 
+IndoBERT \(fine
+-
+tuned\
+ 
+Klasifikasi sentimen Bahasa 
+Indonesia
+ 
+Topic Modeling
+ 
+BERTopic / HuggingFace
+ 
+Klasterisasi topik otomatis
+ 
+NER
+ 
+HuggingFace 
+Transformers
+ 
+Ekstraksi entitas \(Person, Org, 
+Location\
+ 
+ML Framework
+ 
+PyTorch + Transformers
+ 
+Inference dan fine
+-
+tuning 
+model
+ 
+ 
+10.3 Frontend
+ 
+Komponen
+ 
+Teknologi
+ 
+Keterangan
+ 
+Framework
+ 
+React + TypeScript
+ 
+SPA \(Single Page Application\
+ 
+Styling
+ 
+Tailwind CSS
+ 
+Utility
+-
+first CSS framework
+ 
+State Management
+ 
+Zustand
+ 
+Lightweight state management
+ 
+Charts
+ 
+Recharts
+ 
+Grafik bar, line, pie, area
+ 
+Knowledge Graph
+ 
+D3.js / Cytoscape.js
+ 
+Force
+-
+directed graph 
+visualization
+ 
+HTTP Client
+ 
+Axios / Fetch API
+ 
+Komunikasi dengan 
+backend
+ 
+ 
+11. Data Model
+ 
+11.1 Entitas Utama \(PostgreSQL\
+ 
+Tabel: posts
+ 
+Kolom
+ 
+Tipe
+ 
+Deskripsi
+ 
+id
+ 
+UUID \(PK\
+ 
+ID internal
+ 
+platform
+ 
+VARCHAR
+ 
+'twitter', 'tiktok', 'instagram'
+ 
+platform_post_id
+ 
+VARCHAR
+ 
+ID asli dari platform
+ 
+author_username
+ 
+VARCHAR
+ 
+Username 
+pembuat post
+ 
+content
+ 
+TEXT
+ 
+Teks caption/post
+ 
+likes
+ 
+INTEGER
+ 
+Jumlah like
+ 
+comments
+ 
+INTEGER
+ 
+Jumlah komentar
+ 
+shares
+ 
+INTEGER
+ 
+Jumlah share/repost
+ 
+views
+ 
+INTEGER
+ 
+Jumlah views/plays
+ 
+hashtags
+ 
+ 
+Array hashtag
+ 
+posted_at
+ 
+TIMESTAMP
+ 
+Waktu post dibuat
+ 
+scraped_at
+ 
+TIMESTAMP
+ 
+Waktu data di
+-
+scrape
+ 
+sentiment
+ 
+VARCHAR
+ 
+'positive', 'negative', 'neutral'
+ 
+sentiment_score
+ 
+FLOAT
+ 
+Skor confidence sentimen
+ 
+topic_id
+ 
+INTEGER \(FK\
+ 
+Referensi ke topik
+ 
+created_at
+ 
+TIMESTAMP
+ 
+Waktu record dibuat
+ 
+ 
+Tabel: topics
+ 
+Kolom
+ 
+Tipe
+ 
+Deskripsi
+ 
+id
+ 
+SERIAL \(PK\
+ 
+ID topik
+ 
+name
+ 
+VARCHAR
+ 
+Label topik
+ 
+keywords
+ 
+ 
+Kata kunci representatif
+ 
+post_count
+ 
+INTEGER
+ 
+Jumlah post dalam topik
+ 
+first_seen
+ 
+TIMESTAMP
+ 
+Pertama kali muncul
+ 
+last_seen
+ 
+TIMESTAMP
+ 
+Terakhir muncul
+ 
+ 
+Tabel: entities
+ 
+Kolom
+ 
+Tipe
+ 
+Deskripsi
+ 
+id
+ 
+SERIAL \(PK\
+ 
+ID entitas
+ 
+name
+ 
+VARCHAR
+ 
+Nama entitas
+ 
+type
+ 
+VARCHAR
+ 
+'person', 'organization', 
+'location', 'event'
+ 
+mention_count
+ 
+INTEGER
+ 
+Jumlah kemunculan
+ 
+ 
+Tabel: users \(autentikasi\
+ 
+Kolom
+ 
+Tipe
+ 
+Deskripsi
+ 
+id
+ 
+SERIAL \(PK\
+ 
+ID user
+ 
+username
+ 
+VARCHAR
+ 
+Username login
+ 
+password_hash
+ 
+VARCHAR
+ 
+Hash password
+ 
+full_name
+ 
+VARCHAR
+ 
+Nama lengkap
+ 
+created_at
+ 
+TIMESTAMP
+ 
+Waktu dibuat
+ 
+ 
+11.2 Elasticsearch Index
+ 
+Index posts_index 
+
+ 
+Mapping mengikuti struktur tabel posts dengan tambahan full
+-
+text 
+search pada field 
+content. Digunakan untuk: pencarian kata kunci, agregasi sentimen per 
+waktu, dan agregasi per platform.
+ 
+11.3 Neo4J Graph Model
+ 
+
+ 
+Nodes: Topic \(id, name, keywords\Entity \(id, name, type\, Post \(id, platform\
+ 
+
+ 
+Edges: \(Post\
+-
+-
+>\(Entity\\(Post\
+-
+[:BEL
+-
+>\(Topic\, \(Entity\
+-
+-
+>\(Entity\
+ 
+12. API Endpoints \(Backend\
+ 
+12.1 Authentication
+ 
+Method
+ 
+Endpoint
+ 
+Deskripsi
+ 
+POST
+ 
+/api/auth/login
+ 
+Login pengguna
+ 
+POST
+ 
+/api/auth/logout
+ 
+Logout pengguna
+ 
+ 
+12.2 Dashboard Overview
+ 
+Method
+ 
+Endpoint
+ 
+Deskripsi
+ 
+GET
+ 
+/api/dashboard/overview
+ 
+Ringkasan metrik utama
+ 
+GET
+ 
+/api/dashboard/timeline
+ 
+Data trend berdasarkan waktu
+ 
+ 
+12.3 Sentiment
+ 
+Method
+ 
+Endpoint
+ 
+Deskripsi
+ 
+GET
+ 
+/api/sentiment/distribution
+ 
+Distribusi sentimen \(filterable 
+by platform, date\
+ 
+GET
+ 
+/api/sentiment/timeline
+ 
+Sentimen per hari
+ 
+GET
+ 
+/api/sentiment/posts
+ 
+Daftar post dengan filter 
+sentimen
+ 
+ 
+12.4 Topics
+ 
+Method
+ 
+Endpoint
+ 
+Deskripsi
+ 
+GET
+ 
+/api/topics
+ 
+Daftar topik trending
+ 
+GET
+ 
+/api/topics/{id}
+ 
+Detail topik beserta post terkait
+ 
+GET
+ 
+/api/topics/timeline
+ 
+Timeline kemunculan topik
+ 
+ 
+12.5 Knowledge Graph
+ 
+Method
+ 
+Endpoint
+ 
+Deskripsi
+ 
+GET
+ 
+/api/graph/nodes
+ 
+Daftar node \(entities, topics\
+ 
+GET
+ 
+/api/graph/edges
+ 
+Daftar edge \(relasi\
+ 
+GET
+ 
+/api/graph/data
+ 
+Full graph data \(nodes + edges\
+untuk 
+visualisasi
+ 
+GET
+ 
+/api/graph/node/{id}
+ 
+Detail sebuah node
+ 
+ 
+12.6 Search & Filter
+ 
+Method
+ 
+Endpoint
+ 
+Deskripsi
+ 
+GET
+ 
+/api/search
+ 
+Pencarian full
+-
+text pada post
+ 
+GET
+ 
+/api/posts
+ 
+Daftar post dengan paginasi 
+dan filter
+ 
+ 
+13. Tim Proyek & Pembagian Tanggung Jawab
+ 
+Peran
+ 
+Jumlah
+ 
+Tanggung Jawab
+ 
+Data Engineer
+ 
+2
+ 
+Pengembangan scraper \(X, 
+TikTok, Instagram\data 
+pipeline \(ingestion, normalisasi, 
+deduplikasi\manajemen 
+database \(PostgreSQL, 
+Elasticsearch, MinIO\dan 
+pengembangan Backend API 
+\(FastAPI\
+ 
+Data Scientist
+ 
+2
+ 
+Fine
+-
+tuning IndoBERT untuk 
+sentiment analysis, 
+implementasi model Hugging 
+Face untuk topic modeling dan 
+NER, pengembangan engine 
+Knowledge Graph, evaluasi dan 
+troubleshooting performa 
+model
+ 
+UI/UX Designer
+ 
+1
+ 
+User research, wireframe, high
+-
+fidelity mockup, 
+design system, 
+dan iterasi desain berdasarkan 
+feedback
+ 
+Front
+-
+End Developer
+ 
+1
+ 
+Slicing UI/UX ke kode \(React + 
+TypeScript + Tailwind\integrasi 
+API, implementasi visualisasi 
+chart \(Recharts\an Knowledge 
+Graph \(D3.js/Cytoscape.js\, 
+state management 
+\(Zustand\
+ 
+ 
+Total Tim: 6 Orang
+ 
+14. Timeline Proyek
+ 
+Durasi: 
+12 Minggu \(11 Agustus 
+
+ 
+9 November 2026\
+ 
+Metode: 
+Sprint 2 mingguan \(6 Sprint\
+ 
+Sprint 0 
+
+ 
+Setup & Planning \(Minggu 1
+-
+2: 11
+
+23 Agustus\
+ 
+Peran
+ 
+Deliverable
+ 
+All
+ 
+Onboarding, pemahaman proyek, setup 
+environment development
+ 
+DE
+ 
+Setup repository, database schema awal, 
+konfigurasi PostgreSQL + Elasticsearch + MinIO + 
+Beanstalkd
+ 
+DS
+ 
+Riset dan seleksi model Hugging Face, persiapan 
+dataset untuk fine
+-
+tuning IndoBERT
+ 
+UI/UX
+ 
+Riset referensi \(National Dashboar
+d\pembuatan 
+wireframe
+ 
+ 
+Milestone: 
+Environment development siap, wireframe selesai.
+ 
+Sprint 1 
+
+ 
+Data Foundation & UI Design \(Minggu 3
+-
+4: 25 Agustus 
+
+ 
+6 
+September\
+ 
+Peran
+ 
+Deliverable
+ 
+DE
+ 
+Stabilisasi scraper TikTok & Instagram, 
+pengembangan scraper X, 
+pipeline ingestion data 
+mentah ke MinIO
+ 
+DS
+ 
+Mulai proses fine
+-
+tuning IndoBERT, eksplorasi 
+BERTopic untuk topic modeling
+ 
+UI/UX
+ 
+High
+-
+Fidelity Mockup seluruh halaman dashboard 
+\(Deadline: 28 Agustus\
+ 
+FE
+ 
+Setup project React + TypeScript + Tailwind + 
+Zustand, 
+mulai slicing komponen UI dasar
+ 
+ 
+Milestone: 
+Scraper berjalan dan mengumpulkan data, high
+-
+fidelity mockup selesai.
+ 
+Sprint 2 
+
+ 
+Pipeline & Model \(Minggu 5
+-
+6: 8
+
+20 September\
+ 
+Peran
+ 
+Deliverable
+ 
+DE
+ 
+Pipeline processing \(normalisasi, deduplikasi, 
+insert ke 
+PostgreSQL & Elasticsearch\mulai 
+development API backend \(FastAPI\
+
+ 
+endpoint 
+auth & CRUD dasar
+ 
+DS
+ 
+Finalisasi fine
+-
+tuning IndoBERT, implementasi 
+model NER, mulai engine co
+-
+occurrence untuk 
+Knowledge Graph
+ 
+FE
+ 
+Slicing halaman Overview, Sentiment, dan Top
+ic 
+Explorer \(data statis/dummy\
+ 
+ 
+Milestone: 
+
+inference.
+ 
+Sprint 3 
+
+ 
+NLP Integration & API \(Minggu 7
+-
+8: 22 September 
+
+ 
+4 Oktober\
+ 
+Peran
+ 
+Deliverable
+ 
+DE
+ 
+Integrasi model NLP ke dalam 
+pipeline, API 
+endpoint untuk dashboard overview, sentimen, 
+dan topik
+ 
+DS
+ 
+Finalisasi topic modeling, engine Knowledge 
+Graph \(node & edge generation\evaluasi akurasi 
+model
+ 
+FE
+ 
+Integrasi API ke halaman Overview dan 
+Sentiment \(data real\ mulai implementasi 
+halaman Knowledge Graph
+ 
+ 
+Milestone: 
+Dashboard menampilkan data real hasil analisis NLP. API core berfungsi.
+ 
+Sprint 4 
+
+ 
+Knowledge Graph & Full Integration \(Minggu 9
+-
+10: 6
+
+18 Oktober\
+ 
+Peran
+ 
+Deliverable
+ 
+DE
+ 
+API endpoint Knowledge Graph, API search & 
+filter, 
+optimasi query database
+ 
+DS
+ 
+Tuning parameter Knowledge Graph, 
+troubleshooting model, eksplorasi image 
+processing \(jika waktu memungkinkan\
+ 
+FE
+ 
+Implementasi visualisasi Knowledge Graph 
+interaktif, integrasi seluruh halaman dengan API, 
+implementasi filter gl
+obal
+ 
+UI/UX
+ 
+Review implementasi, penyesuaian desain 
+berdasarkan data real
+ 
+ 
+Milestone: 
+Seluruh fitur utama terintegrasi end
+-
+to
+-
+end. Knowledge Graph dapat 
+divisualisasikan.
+ 
+Sprint 5 
+
+ 
+Testing & Polish \(Minggu 11
+-
+12: 20 Oktober 
+
+ 
+1 November\
+ 
+Peran
+ 
+Deliverable
+ 
+All
+ 
+Bug fixing berdasarkan hasil testing
+ 
+DE
+ 
+Optimasi performa API & database, penanganan 
+edge case pipeline
+ 
+DS
+ 
+Evaluasi akhir akurasi model, penyesuaian 
+threshold
+ 
+FE
+ 
+Perbaikan UI/UX, micro
+-
+interaction, loading 
+state, error handling
+ 
+UI/UX
+ 
+F
+inal review visual consistency
+ 
+ 
+Milestone: 
+Dashboard stabil dan siap demo. Seluruh bug kritis terselesaikan.
+ 
+Sprint 6 
+
+ 
+Finalisasi & Handover \(3
+
+9 November\
+ 
+Peran
+ 
+Deliverable
+ 
+All
+ 
+Code freeze \(tidak ada fitur baru\
+ 
+DE
+ 
+Dokumentasi API \(Swagger/OpenAPI\
+dokumentasi pipeline & deployment
+ 
+DS
+ 
+Dokumentasi model \(arsitektur, dataset, metrik 
+evaluasi\
+ 
+FE
+ 
+Dokumentasi frontend, final build
+ 
+All
+ 
+Presentasi akhir & demo dashboard \(9 November 
+2026\
+ 
+ 
+Milestone: 
+Proyek selesai. Dokumentasi lengkap. Handover ke PT 
+NoLimit Indonesia.
+ 
+15. Visualisasi Timeline
+ 
+Sprint
+ 
+Periode
+ 
+Fokus Utama
+ 
+Sprint 0
+ 
+11
+
+23 Agustus
+ 
+Setup & Planning
+ 
+Sprint 1
+ 
+25 Ags 
+
+ 
+6 Sep
+ 
+Data Foundation & UI Design
+ 
+Sprint 2
+ 
+8
+
+20 September
+ 
+Pipeline & Model
+ 
+Sprint 3
+ 
+22 Sep 
+
+ 
+4 Okt
+ 
+NLP Integration & API
+ 
+Sprint 4
+ 
+6
+
+18 Oktober
+ 
+Knowledge Graph & Full 
+Integration
+ 
+Sprint 5
+ 
+20 Okt 
+
+ 
+1 Nov
+ 
+Testing & Polish
+ 
+Sprint 6
+ 
+3
+
+9 November
+ 
+Finalisasi & Handover
+ 
+ 
+ 
+ 
+16. Risiko & Mitigasi
+ 
+No
+ 
+Risiko
+ 
+Dampak
+ 
+Mitigasi
+ 
+1
+ 
+Data Engineer 
+merangkap Backend 
+Developer
+ 
+Beban kerja 
+tinggi, 
+potensi bottleneck
+ 
+Gunakan FastAPI untuk 
+development cepat, 
+prioritaskan API yang 
+krusial terlebih dahulu
+ 
+2
+ 
+Scraper dapat berhenti 
+berfungsi \(update 
+platform\
+ 
+Data pipeline terhenti
+ 
+Monitoring harian, 
+fallback ke data 
+internal NoLimit yang 
+sudah a
+da
+ 
+3
+ 
+Performa model NLP 
+tidak optimal
+ 
+Hasil analisis kurang 
+akurat
+ 
+Iterasi tuning secara 
+berkala, gunakan 
+threshold confidence 
+untuk filtering
+ 
+4
+ 
+Integrasi antar 
+
+
+waktu
+ 
+Delay di sprint integrasi
+ 
+Definisikan kontrak API 
+sejak
+ 
+Sprint 1, gunakan 
+mock data untuk 
+parallel development
+ 
+5
+ 
+Knowledge Graph 
+terlalu kompleks untuk 
+divisualisasikan
+ 
+Dashboard lambat atau 
+sulit dibaca
+ 
+Limitasi jumlah node, 
+sediakan filter, 
+gunakan progressive 
+loading
+ 
+6
+ 
+Tim tidak memiliki DQA 
+dedicated
+ 
+Bug
+ 
+lolos ke tahap 
+akhir
+ 
+Setiap developer 
+bertanggung jawab 
+atas unit testing kode 
+masing
+-
+masing, 
+alokasikan waktu 
+testing di Sprint 5
+ 
+ 
+17. Kriteria & Metrik Keberhasilan
+ 
+17.1 Kriteria Keberhasilan
+ 
+No
+ 
+Kriteria
+ 
+Indikator
+ 
+1
+ 
+Data pipeline berfungsi
+ 
+Data dari 
+minimal 2 platform 
+berhasil di
+-
+scrape, diproses, dan 
+tersimpan di database
+ 
+2
+ 
+Model NLP menghasilkan 
+output
+ 
+Sentiment analysis 
+menghasilkan klasifikasi dengan 
+
+ 
+3
+ 
+Knowledge Graph terbangun
+ 
+Graph memiliki node 
+\(entitas/topik\an 
+edge \(relasi\
+yang dapat divisualisasikan
+ 
+4
+ 
+Dashboard dapat diakses
+ 
+Seluruh halaman dashboard 
+\(Overview, Sentiment, Topics, 
+Knowledge Graph\
+menampilkan data real
+ 
+5
+ 
+Filter berfungsi
+ 
+Pengguna dapat memfilter data 
+berdasarkan platform, rentang 
+waktu, dan 
+topik
+ 
+6
+ 
+Dokumentasi lengkap
+ 
+Tersedia dokumentasi API, 
+panduan deployment, dan 
+dokumentasi model
+ 
+ 
+17.2 Key Performance Indicators \(KPI\
+ 
+No
+ 
+KPI
+ 
+Target
+ 
+Cara Pengukuran
+ 
+1
+ 
+Akurasi Sentiment 
+Analysis
+ 
+
+-
+Score\
+ 
+Evaluasi pada test set 
+berlabel
+ 
+2
+ 
+Cakupan
+ 
+Topic 
+Modeling
+ 
+
+-
+assign 
+ke topik
+ 
+Rasio post dengan 
+label topik vs total post
+ 
+3
+ 
+Kelengkapan 
+Knowledge Graph
+ 
+
+teridentifikasi per 
+minggu
+ 
+Count distinct entities 
+dari NER output
+ 
+4
+ 
+Response Time API
+ 
+
+ 
+Monitoring 
+latency 
+pada endpoint API
+ 
+5
+ 
+Uptime Pipeline
+ 
+
+operasional
+ 
+Monitoring cron job 
+scraper dan pipeline
+ 
+6
+ 
+Volume Data Terproses
+ 
+
+per platform
+ 
+Count records di 
+database
+ 
+7
+ 
+Kualitas Data 
+\(Deduplikasi\
+ 
+
+setela
+h processing
+ 
+Sampling dan 
+pengecekan manual
+ 
+8
+ 
+Dashboard Load Time
+ 
+
+ 
+Browser performance 
+profiling
+ 
+ 
+ 
+ 
+Lampiran
+ 
+A. Referensi
+ 
+
+ 
+National Dashboard 
+-
+ 
+Revisi Sidebar Submenu.pdf \(PT NoLimit Indonesia\
+ 
+
+ 
+IndoBERT: Pre
+-
+trained Language Model 
+for Indonesian NLP \(Hugging Face\
+ 
+
+ 
+BERTopic Documentation \(https://maartengr.github.io/BERTopic/\
+ 
+B. Glossary
+ 
+Istilah
+ 
+Definisi
+ 
+NLP
+ 
+Natural Language Processing 
+
+ 
+pemrosesan 
+bahasa alami oleh mesin
+ 
+NER
+ 
+Named Entity Recognition 
+
+ 
+pengenalan entitas 
+bernama 
+dalam teks
+ 
+Knowledge Graph
+ 
+Representasi terstruktur dari relasi antar entitas 
+dalam bentuk graf
+ 
+Fine
+-
+tuning
+ 
+Proses melatih ulang model pre
+-
+trained pada 
+dataset spesifik
+ 
+MITM
+ 
+Man
+-
+in
+-
+the
+-
+Middle 
+
+ 
+teknik penyadapan traffic 
+jaringan
+ 
+Sentiment Analysis
+ 
+Anal
+isis sentimen 
+
+ 
+mengidentifikasi opini 
+positif/negatif/netral
+ 
+Co
+-
+occurrence
+ 
+Kemunculan bersama dua entitas dalam konteks 
+yang sama
+ 
+ 

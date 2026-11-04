@@ -18,7 +18,7 @@ services:
     environment:
       - POSTGRES_USER=postgres
       - POSTGRES_PASSWORD=postgres
-      - POSTGRES_DB=medallion_db
+      - POSTGRES_DB=narrative_db
     ports:
       - "5432:5432"
     volumes:

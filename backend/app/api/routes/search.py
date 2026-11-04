@@ -8,7 +8,7 @@ from datetime import datetime
 from app.api.dependencies import get_db
 from models import Post
 
-router = APIRouter(prefix="/api/search", tags=["Search"])
+router = APIRouter(tags=["Search"])
 
 class PostResponse(BaseModel):
     platform: str
@@ -21,6 +21,7 @@ class PostResponse(BaseModel):
     class Config:
         from_attributes = True
 
+@router.get("", response_model=List[PostResponse])
 @router.get("/", response_model=List[PostResponse])
 def global_search(
     q: Optional[str] = Query(None, description="Kata kunci untuk Full-Text Search"),

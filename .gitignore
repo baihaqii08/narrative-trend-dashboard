@@ -1,8 +1,18 @@
-# Environment Variables
+# ==========================================
+# ENVIRONMENT & CREDENTIALS (SANGAT KRUSIAL)
+# ==========================================
 .env
 .env.*
+!.env.example
+*.env
+*.pem
+*.key
+*.cert
+*.crt
 
-# Python
+# ==========================================
+# PYTHON VIRTUAL ENV & CACHE
+# ==========================================
 __pycache__/
 *.py[cod]
 *$py.class
@@ -12,25 +22,78 @@ venv/
 ENV/
 env.bak/
 venv.bak/
+.pytest_cache/
+.coverage
+htmlcov/
 
-# Scraper Data & Logs (Data Besar / Barang Bukti)
-Scrapers/raw_batches/
-Scrapers/x/
-Scrapers/audit_log_*.txt
-Scrapers/processed_tweet_ids.json
-Scrapers/playwright_auth/
-Scrapers/twitter_profile/
+# ==========================================
+# NODE.JS / FRONTEND ARTIFACTS
+# ==========================================
+node_modules/
+dist/
+build/
+.next/
+npm-debug.log*
+yarn-debug.log*
+yarn-error.log*
+pnpm-debug.log*
 
-# Zips and Media
+# ==========================================
+# LARGE COMPRESSED ARCHIVES & MEDIA
+# ==========================================
 *.zip
+*.rar
+*.7z
+*.tar
 *.tar.gz
+*.gz
 *.png
 *.jpeg
 *.jpg
 *.pdf
-*.xlsx
+*.svg
+*.ico
 
-# OS generated files
+# ==========================================
+# DATA DUMPS & SPREADSHEETS (DATA BESAR)
+# ==========================================
+*.xlsx
+*.xls
+*.csv
+*.parquet
+
+# ==========================================
+# DOKUMEN INTERNAL & PROYEK NON-RELEVAN
+# ==========================================
+DOKUMEN KERJA PRAKTEK/
+DOKUMEN KERJA PRAKTEK.rar
+Judol/
+Komawan-FE/
+KomawanBE-main/
+portfolio-backend-kp/
+X-Medallion-Data-Pipeline/
+PRESENTASI_FINAL/
+Task/
+chrome_extension/
+Scrapers/
+.gemini/
+docs/superpowers/
+
+# ==========================================
+# PIPELINE AUDIT DUMPS & LOGS
+# ==========================================
+pipeline/audit_*.txt
+pipeline/*.csv
+pipeline/*.json
+pipeline/raw_batches/
+pipeline/raw_batches_trending/
+pipeline/uploaded_bronze_batches/
+pipeline/audit_logs/
+pipeline/twitter_profile/
+
+# ==========================================
+# OS SYSTEM FILES
+# ==========================================
 .DS_Store
 .DS_Store?
 ._*
@@ -38,8 +101,4 @@ Scrapers/twitter_profile/
 .Trashes
 ehthumbs.db
 Thumbs.db
-# Internal DE 2 Files
-PRESENTASI_FINAL/
-Task/
-example_ds_consumer.py
-zipper.py
+Desktop.ini

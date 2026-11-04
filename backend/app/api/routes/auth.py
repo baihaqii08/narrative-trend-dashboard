@@ -1,8 +1,9 @@
 from datetime import timedelta
-from typing import Any
-from fastapi import APIRouter, Body, Depends, HTTPException
+from typing import Any, Optional
+from fastapi import APIRouter, Body, Depends, HTTPException, Request
 from fastapi.security import OAuth2PasswordRequestForm
 from sqlalchemy.orm import Session
+from sqlalchemy import or_
 import uuid
 
 from app.core import security
@@ -14,22 +15,51 @@ from app.schemas import user as schemas
 router = APIRouter()
 
 @router.post("/login", response_model=schemas.Token)
-def login_access_token(
-    db: Session = Depends(get_db), form_data: OAuth2PasswordRequestForm = Depends()
+async def login_access_token(
+    request: Request,
+    db: Session = Depends(get_db)
 ) -> Any:
     """
-    OAuth2 compatible token login, get an access token for future requests
+    Login with Email or Username and Password.
+    Supports JSON body ({"email": "...", "password": "..."}) and Form Data.
     """
-    user = db.query(User).filter(User.username == form_data.username).first()
-    if not user or not security.verify_password(form_data.password, user.password_hash):
-        raise HTTPException(status_code=400, detail="Incorrect username or password")
+    content_type = request.headers.get("content-type", "")
+    username_or_email = None
+    password = None
+
+    if "application/json" in content_type:
+        try:
+            body = await request.json()
+        except Exception:
+            raise HTTPException(status_code=400, detail="Format JSON tidak valid")
+        username_or_email = body.get("email") or body.get("username")
+        password = body.get("password")
+    else:
+        # Form Data fallback (Swagger UI OAuth2 / x-www-form-urlencoded)
+        form = await request.form()
+        username_or_email = form.get("username") or form.get("email")
+        password = form.get("password")
+
+    if not username_or_email or not password:
+        raise HTTPException(
+            status_code=400,
+            detail="Email/Username dan Password harus diisi"
+        )
+
+    # Search by email or username
+    user = db.query(User).filter(
+        or_(User.email == username_or_email, User.username == username_or_email)
+    ).first()
+
+    if not user or not security.verify_password(password, user.password_hash):
+        raise HTTPException(status_code=400, detail="Email/Username atau password salah")
     elif not user.is_active:
-        raise HTTPException(status_code=400, detail="Inactive user")
+        raise HTTPException(status_code=400, detail="User tidak aktif")
         
     access_token_expires = timedelta(minutes=settings.ACCESS_TOKEN_EXPIRE_MINUTES)
     return {
         "access_token": security.create_access_token(
-            user.username, expires_delta=access_token_expires
+            user.username or user.email, expires_delta=access_token_expires
         ),
         "token_type": "bearer",
     }
@@ -41,18 +71,33 @@ def register_user(
     user_in: schemas.UserCreate,
 ) -> Any:
     """
-    Create new user.
+    Create new user. Mendukung pendaftaran dengan email dan password.
     """
-    user = db.query(User).filter(User.username == user_in.username).first()
-    if user:
+    identifier = user_in.email or user_in.username
+    if not identifier:
+        raise HTTPException(status_code=400, detail="Email atau Username wajib diisi")
+
+    # Otomatis buat username dari email jika tidak diisi
+    username = user_in.username or (user_in.email.split("@")[0] if user_in.email else "user")
+    email = user_in.email
+
+    # Cek apakah user sudah terdaftar berdasarkan username atau email
+    existing = db.query(User).filter(
+        or_(
+            User.username == username,
+            (User.email == email) if email else False
+        )
+    ).first()
+    if existing:
         raise HTTPException(
             status_code=400,
-            detail="The user with this username already exists in the system.",
+            detail="User dengan email atau username ini sudah terdaftar.",
         )
+
     user = User(
-        username=user_in.username,
-        email=user_in.email,
-        full_name=user_in.full_name,
+        username=username,
+        email=email,
+        full_name=user_in.full_name or username,
         password_hash=security.get_password_hash(user_in.password),
         is_active=True
     )
