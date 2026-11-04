@@ -1,6 +1,6 @@
 // Service API Resmi untuk sinkronisasi Frontend dengan Backend FastAPI (PostgreSQL & Neo4J)
-const rawBaseUrl = import.meta.env.VITE_API_BASE_URL || 'http://100.71.67.42:8000/api';
-export const API_BASE_URL = rawBaseUrl.replace(/\/+$/, '');
+const rawBaseUrl = (import.meta.env.VITE_API_BASE_URL || 'http://localhost:8000/api').replace(/\/+$/, '');
+export const API_BASE_URL = rawBaseUrl.endsWith('/api') ? rawBaseUrl : `${rawBaseUrl}/api`;
 
 export interface SocialPost {
   id: string | number;
