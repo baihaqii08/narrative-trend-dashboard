@@ -1,4 +1,4 @@
-# ==========================================
+﻿# ==========================================
 # ENVIRONMENT & CREDENTIALS (SANGAT KRUSIAL)
 # ==========================================
 .env
@@ -53,6 +53,10 @@ pnpm-debug.log*
 *.pdf
 *.svg
 *.ico
+!frontend/public/**
+!frontend/src/**/*.svg
+!frontend/src/**/*.png
+!frontend/src/**/*.ico
 
 # ==========================================
 # DATA DUMPS & SPREADSHEETS (DATA BESAR)
