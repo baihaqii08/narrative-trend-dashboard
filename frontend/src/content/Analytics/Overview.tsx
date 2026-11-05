@@ -20,17 +20,28 @@ import {
 } from '../../services/api';
 
 const getEntityTypeBadge = (type: string) => {
-  switch (normalizeEntityType(type)) {
-    case 'Location':
-      return { bg: '#dcfce7', color: '#15803d' };
-    case 'Organization':
-      return { bg: '#dbeafe', color: '#1d4ed8' };
-    case 'Person':
-      return { bg: '#f3e8ff', color: '#7e22ce' };
-    case 'Topic':
-      return { bg: '#ffedd5', color: '#c2410c' };
+  const normType = normalizeEntityType(type).toLowerCase();
+  switch (normType) {
+    case 'person':
+      return { bg: '#f3e8ff', color: '#7e22ce', border: '#d8b4fe' };
+    case 'organization':
+      return { bg: '#eff6ff', color: '#1d4ed8', border: '#bfdbfe' };
+    case 'geopolitical':
+      return { bg: '#ecfeff', color: '#0e7490', border: '#a5f3fc' };
+    case 'location':
+      return { bg: '#ecfdf5', color: '#047857', border: '#a7f3d0' };
+    case 'product':
+      return { bg: '#fefce8', color: '#b45309', border: '#fde047' };
+    case 'event':
+      return { bg: '#fdf2f8', color: '#be185d', border: '#fbcfe8' };
+    case 'norm':
+      return { bg: '#fef2f2', color: '#dc2626', border: '#fecaca' };
+    case 'facility':
+      return { bg: '#f0fdfa', color: '#0f766e', border: '#99f6e4' };
+    case 'topic':
+      return { bg: '#fff7ed', color: '#c2410c', border: '#fed7aa' };
     default:
-      return { bg: '#f1f5f9', color: '#475569' };
+      return { bg: '#f1f5f9', color: '#475569', border: '#e2e8f0' };
   }
 };
 
@@ -1742,7 +1753,8 @@ function Overview({ theme, isDark, timeFilter = 'all', setTimeFilter, platformFi
                         fontWeight: '700',
                         color: typeBadge.color,
                         backgroundColor: typeBadge.bg,
-                        padding: '3px 8px',
+                        border: `1px solid ${typeBadge.border}`,
+                        padding: '3px 9px',
                         borderRadius: '12px',
                         display: 'inline-flex',
                         alignItems: 'center',

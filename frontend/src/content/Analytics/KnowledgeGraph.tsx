@@ -11,7 +11,7 @@ export const ENTITY_COLORS: Record<string, string> = {
   location: '#10b981',     // Hijau Emerald (LOC - 5 entitas)
   product: '#eab308',      // Kuning Amber (PRD - 23 entitas)
   event: '#ec4899',        // Pink (EVT - 10 entitas)
-  norm: '#6366f1',         // Indigo (NOR - 33 entitas)
+  norm: '#ef4444',         // Merah (NOR - 33 entitas)
   facility: '#14b8a6'      // Teal (FAC - 0 entitas saat ini)
 };
 

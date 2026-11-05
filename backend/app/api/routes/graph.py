@@ -17,7 +17,7 @@ ENTITY_COLOR_MAP = {
     "location": "#10b981",      # Emerald Green
     "product": "#eab308",       # Amber
     "event": "#ec4899",         # Pink
-    "norm": "#6366f1",          # Indigo
+    "norm": "#ef4444",          # Red
     "facility": "#14b8a6",      # Teal
 }
 
