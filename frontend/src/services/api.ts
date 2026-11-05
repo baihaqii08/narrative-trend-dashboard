@@ -86,13 +86,18 @@ export interface DashboardOverviewData {
 }
 
 export function normalizeEntityType(type?: string): string {
-  if (!type) return 'Topic';
-  const lower = type.toLowerCase();
-  if (lower === 'person' || lower === 'per') return 'Person';
-  if (lower === 'organization' || lower === 'org') return 'Organization';
-  if (lower === 'location' || lower === 'loc' || lower === 'gpe') return 'Location';
-  if (lower === 'topic' || lower === 'event') return 'Topic';
-  return type.charAt(0).toUpperCase() + type.slice(1);
+  if (!type) return 'topic';
+  const lower = type.toLowerCase().trim();
+  if (lower === 'person' || lower === 'per') return 'person';
+  if (lower === 'organization' || lower === 'org') return 'organization';
+  if (lower === 'geopolitical' || lower === 'gpe') return 'geopolitical';
+  if (lower === 'location' || lower === 'loc') return 'location';
+  if (lower === 'product' || lower === 'prd') return 'product';
+  if (lower === 'event' || lower === 'evt') return 'event';
+  if (lower === 'norm' || lower === 'nor') return 'norm';
+  if (lower === 'facility' || lower === 'fac') return 'facility';
+  if (lower === 'topic') return 'topic';
+  return lower;
 }
 
 export function normalizePlatform(platform?: string): string {
@@ -871,12 +876,16 @@ export async function fetchKnowledgeGraphFromApi(params?: {
 
   const edges = rawEdges.map((e: any, idx: number) => {
     const d = e.data ? e.data : e;
+    const edgeType = String(d.type || d.label || d.relationship || 'CO_OCCURS_WITH');
+    const isTopicEdge = edgeType.includes('BELONGS_TO') || edgeType.includes('TOPIC') || d.style === 'dashed';
     return {
       data: {
         id: String(d.id ?? `edge_${d.source}_${d.target}_${idx}`),
         source: String(d.source ?? d.from),
         target: String(d.target ?? d.to),
-        weight: Number(d.weight ?? d.count ?? d.value ?? 1)
+        type: edgeType,
+        weight: Number(d.weight ?? d.npmi ?? d.count ?? d.value ?? 1),
+        style: isTopicEdge ? 'dashed' : 'solid'
       }
     };
   });
