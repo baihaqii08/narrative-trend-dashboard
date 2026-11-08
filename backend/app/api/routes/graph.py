@@ -4,7 +4,7 @@ from typing import Optional, List, Dict, Any
 
 from app.api.dependencies import get_db
 from models import Topic, Post, Entity
-from app.core.database import neo4j_driver
+from app.core.database import neo4j_driver, get_neo4j_driver
 
 router = APIRouter(tags=["Graph"])
 
@@ -174,8 +174,120 @@ MBG_TOPICS_FALLBACK = [
     "Program Makan Bergizi Gratis Indonesia",
     "Pemanfaatan susu segar nasional",
     "Program Makan Bergizi Gratis di Kendari",
-    "Susu ikan sebagai pengganti susu sapi",
-    "Program Makan Bergizi Gratis"
+    "Program Makan Bergizi Gratis",
+    "Lainnya / Tidak terklasifikasi",
+]
+
+MBG_CO_OCCURS_FALLBACK = [
+    {"source": "papua", "target": "sulawesi", "weight": 0.5909, "cooccur": 4, "pmi": 4.4558},
+    {"source": "papua", "target": "ntt", "weight": 0.4998, "cooccur": 7, "pmi": 3.4894},
+    {"source": "papua", "target": "maluku", "weight": 0.5518, "cooccur": 7, "pmi": 3.8523},
+    {"source": "papua", "target": "aceh", "weight": 0.4893, "cooccur": 5, "pmi": 3.5803},
+    {"source": "jawa barat", "target": "jawa timur", "weight": 0.5853, "cooccur": 5, "pmi": 4.2831},
+    {"source": "jawa barat", "target": "jawa tengah", "weight": 0.5923, "cooccur": 5, "pmi": 4.3343},
+    {"source": "jawa barat", "target": "kompas com", "weight": 0.5471, "cooccur": 3, "pmi": 4.2831},
+    {"source": "amerika serikat", "target": "india", "weight": 0.5744, "cooccur": 3, "pmi": 4.4966},
+    {"source": "india", "target": "swedia", "weight": 0.6862, "cooccur": 3, "pmi": 5.3721},
+    {"source": "jakarta", "target": "bangkalan", "weight": 0.4461, "cooccur": 3, "pmi": 3.4923},
+    {"source": "prabowo", "target": "prabowo subianto", "weight": 0.4149, "cooccur": 177, "pmi": 1.5566},
+    {"source": "prabowo subianto", "target": "presiden ri", "weight": 0.7032, "cooccur": 69, "pmi": 3.2997},
+    {"source": "australia", "target": "blitar", "weight": 0.6702, "cooccur": 3, "pmi": 5.2469},
+    {"source": "australia", "target": "malang", "weight": 0.5646, "cooccur": 3, "pmi": 4.4203},
+    {"source": "australia", "target": "selandia baru", "weight": 0.7784, "cooccur": 3, "pmi": 6.0942},
+    {"source": "pilpres 2024", "target": "kpu", "weight": 0.6691, "cooccur": 3, "pmi": 5.2386},
+    {"source": "menteri keuangan", "target": "sri mulyani", "weight": 0.6843, "cooccur": 5, "pmi": 5.0075},
+    {"source": "budi gunadi sadikin", "target": "zulkifli hasan", "weight": 0.5413, "cooccur": 9, "pmi": 3.6431},
+    {"source": "budi gunadi sadikin", "target": "menteri kesehatan", "weight": 0.8184, "cooccur": 9, "pmi": 5.5079},
+    {"source": "menteri kesehatan", "target": "zulkifli hasan", "weight": 0.5297, "cooccur": 5, "pmi": 3.8763},
+    {"source": "blitar", "target": "malang", "weight": 0.678, "cooccur": 3, "pmi": 5.3076},
+    {"source": "jawa timur", "target": "jawa tengah", "weight": 0.58, "cooccur": 4, "pmi": 4.3736},
+    {"source": "susu kambing", "target": "susu kerbau", "weight": 0.9462, "cooccur": 4, "pmi": 7.1357},
+    {"source": "susu kambing", "target": "tvone", "weight": 0.8462, "cooccur": 3, "pmi": 6.6249},
+    {"source": "susu kambing", "target": "susu sapi", "weight": 0.7202, "cooccur": 4, "pmi": 5.4309},
+    {"source": "susu kerbau", "target": "tvone", "weight": 0.898, "cooccur": 3, "pmi": 7.0303},
+    {"source": "susu kerbau", "target": "susu sapi", "weight": 0.7739, "cooccur": 4, "pmi": 5.8364},
+    {"source": "susu sapi", "target": "susu ikan", "weight": 0.882, "cooccur": 24, "pmi": 5.6823},
+    {"source": "susu sapi", "target": "tvone", "weight": 0.6803, "cooccur": 3, "pmi": 5.3256},
+    {"source": "korea", "target": "yonsei university", "weight": 0.776, "cooccur": 3, "pmi": 6.0748},
+    {"source": "andi amran sulaiman", "target": "menteri pertanian", "weight": 0.872, "cooccur": 4, "pmi": 6.5761},
+    {"source": "jawa tengah", "target": "jayapura", "weight": 0.656, "cooccur": 3, "pmi": 5.1357},
+    {"source": "hasan", "target": "rri", "weight": 0.8095, "cooccur": 3, "pmi": 6.3372},
+    {"source": "pemerintah pusat", "target": "pemkab malang", "weight": 0.6423, "cooccur": 3, "pmi": 5.0288},
+    {"source": "tni", "target": "polri", "weight": 0.5944, "cooccur": 12, "pmi": 4.0002},
+    {"source": "hasan nasbi", "target": "kendari", "weight": 0.8925, "cooccur": 4, "pmi": 6.7302},
+    {"source": "makassar", "target": "sulawesi selatan", "weight": 0.7124, "cooccur": 4, "pmi": 5.3721},
+    {"source": "jepang", "target": "japan international cooperation agency jica", "weight": 0.6091, "cooccur": 3, "pmi": 4.7686},
+    {"source": "jepang", "target": "eropa", "weight": 0.6319, "cooccur": 7, "pmi": 4.4119},
+    {"source": "presiden ri", "target": "eastern economic forum eef ke 11", "weight": 0.4813, "cooccur": 3, "pmi": 3.7684},
+    {"source": "badan gizi nasional bgn", "target": "kepala bgn", "weight": 0.4092, "cooccur": 21, "pmi": 2.4075},
+    {"source": "kepala bgn", "target": "bgn", "weight": 0.4404, "cooccur": 9, "pmi": 2.9642},
+    {"source": "menteri perencanaan pembangunan nasional ppn kepala bappenas", "target": "rachmat", "weight": 0.9348, "cooccur": 3, "pmi": 7.318},
+    {"source": "kementerian pertahanan", "target": "kementerian pekerjaan umum", "weight": 0.7642, "cooccur": 3, "pmi": 5.983},
+    {"source": "kementerian pertahanan", "target": "kementerian kesehatan", "weight": 0.5354, "cooccur": 3, "pmi": 4.1912},
+    {"source": "kementerian pertahanan", "target": "polri", "weight": 0.4924, "cooccur": 5, "pmi": 3.6035},
+    {"source": "kementerian pertahanan", "target": "kementerian sosial", "weight": 0.7642, "cooccur": 3, "pmi": 5.983},
+    {"source": "kementerian pertahanan", "target": "kementerian agama", "weight": 0.6389, "cooccur": 3, "pmi": 5.0022},
+    {"source": "polri", "target": "kemenhan", "weight": 0.6308, "cooccur": 3, "pmi": 4.9385},
+    {"source": "dpr ri", "target": "ketua dprd kota malang", "weight": 0.5044, "cooccur": 4, "pmi": 3.8035},
+    {"source": "dpr ri", "target": "dpr", "weight": 0.4636, "cooccur": 8, "pmi": 3.1749},
+    {"source": "dpr ri", "target": "amithya ratnanggani sirraduhita", "weight": 0.5376, "cooccur": 3, "pmi": 4.2089},
+    {"source": "tahu", "target": "telur", "weight": 0.4592, "cooccur": 3, "pmi": 3.5947},
+    {"source": "telur", "target": "daging ayam", "weight": 0.532, "cooccur": 3, "pmi": 4.1653},
+    {"source": "telur ayam", "target": "telur puyuh", "weight": 0.7059, "cooccur": 3, "pmi": 5.5262},
+    {"source": "zulkifli hasan", "target": "seminar nasional koperasi desa kelurahan merah putih kdkmp", "weight": 0.6374, "cooccur": 5, "pmi": 4.6648},
+    {"source": "zulkifli hasan", "target": "zulhas", "weight": 0.6134, "cooccur": 6, "pmi": 4.3771},
+    {"source": "zulkifli hasan", "target": "menteri koordinator bidang pangan republik indonesia", "weight": 0.5958, "cooccur": 3, "pmi": 4.6648},
+    {"source": "zulkifli hasan", "target": "seminar koperasi desa kelurahan merah putih", "weight": 0.5732, "cooccur": 5, "pmi": 4.1948},
+    {"source": "ketua dpd ri", "target": "sultan", "weight": 0.8127, "cooccur": 3, "pmi": 6.3625},
+    {"source": "pdip", "target": "gerindra", "weight": 0.7242, "cooccur": 3, "pmi": 5.6694},
+    {"source": "dpr", "target": "komisi ii dpr ri", "weight": 0.5334, "cooccur": 4, "pmi": 4.0222},
+    {"source": "yahya zaini", "target": "wakil ketua komisi ix dpr ri", "weight": 0.8935, "cooccur": 12, "pmi": 5.7564},
+    {"source": "telur dadar", "target": "telur ceplok", "weight": 0.7258, "cooccur": 3, "pmi": 5.6823},
+    {"source": "telur dadar", "target": "telur rebus", "weight": 0.6316, "cooccur": 3, "pmi": 4.9447},
+    {"source": "telur rebus", "target": "telur ceplok", "weight": 0.5739, "cooccur": 3, "pmi": 4.4927},
+    {"source": "amithya ratnanggani sirraduhita", "target": "ketua dprd kota malang", "weight": 0.8115, "cooccur": 9, "pmi": 5.4617},
+    {"source": "wakil presiden wapres", "target": "wali kota solo", "weight": 0.8462, "cooccur": 3, "pmi": 6.6249},
+    {"source": "komisi ix dpr ri", "target": "mbg watch", "weight": 0.4801, "cooccur": 3, "pmi": 3.7589},
+    {"source": "zulkifli hasan zulhas", "target": "seminar koperasi desa kelurahan merah putih", "weight": 0.6874, "cooccur": 3, "pmi": 5.3817},
+    {"source": "sudaryono", "target": "wakil menteri pertanian", "weight": 0.7577, "cooccur": 3, "pmi": 5.9317},
+    {"source": "jawa", "target": "madura", "weight": 0.7059, "cooccur": 3, "pmi": 5.5262},
+    {"source": "jawa", "target": "pt garuda muda karya", "weight": 0.5745, "cooccur": 4, "pmi": 4.3323},
+    {"source": "wakil presiden", "target": "wapres ri", "weight": 0.8229, "cooccur": 3, "pmi": 6.4425},
+    {"source": "charles", "target": "wakil ketua komisi ix dpr ri", "weight": 0.7444, "cooccur": 4, "pmi": 5.6133},
+    {"source": "hp android", "target": "instagram", "weight": 1.0, "cooccur": 7, "pmi": 6.9815},
+    {"source": "hp android", "target": "kamera", "weight": 1.0, "cooccur": 7, "pmi": 6.9815},
+    {"source": "instagram", "target": "kamera", "weight": 1.0, "cooccur": 7, "pmi": 6.9815},
+    {"source": "nasi putih", "target": "tahu goreng", "weight": 0.5062, "cooccur": 7, "pmi": 3.5338},
+    {"source": "sidang bersama", "target": "sidang tahunan mpr", "weight": 0.7583, "cooccur": 4, "pmi": 5.7186},
+    {"source": "sidang bersama", "target": "sidang tahunan", "weight": 0.7317, "cooccur": 4, "pmi": 5.518},
+    {"source": "menteri dalam negeri", "target": "tito", "weight": 0.6356, "cooccur": 3, "pmi": 4.9762},
+    {"source": "menteri dalam negeri", "target": "tito karnavian", "weight": 0.6976, "cooccur": 3, "pmi": 5.4617},
+    {"source": "tito", "target": "tito karnavian", "weight": 0.7518, "cooccur": 4, "pmi": 5.6694},
+    {"source": "kementerian agama", "target": "kementerian sosial", "weight": 0.8747, "cooccur": 3, "pmi": 6.848},
+    {"source": "kementerian agama", "target": "kementerian pekerjaan umum", "weight": 0.8747, "cooccur": 3, "pmi": 6.848},
+    {"source": "kementerian agama", "target": "kementerian kesehatan", "weight": 0.6458, "cooccur": 3, "pmi": 5.0562},
+    {"source": "kementerian kesehatan", "target": "kementerian pekerjaan umum", "weight": 0.7711, "cooccur": 3, "pmi": 6.0371},
+    {"source": "kementerian kesehatan", "target": "kementerian sosial", "weight": 0.7711, "cooccur": 3, "pmi": 6.0371},
+    {"source": "kementerian pekerjaan umum", "target": "kementerian sosial", "weight": 1.0, "cooccur": 3, "pmi": 7.8288},
+    {"source": "batu besar", "target": "nongsa c", "weight": 1.0, "cooccur": 3, "pmi": 7.8288},
+    {"source": "batu besar", "target": "kav senjulung", "weight": 1.0, "cooccur": 3, "pmi": 7.8288},
+    {"source": "batu besar", "target": "httpurl", "weight": 1.0, "cooccur": 3, "pmi": 7.8288},
+    {"source": "httpurl", "target": "nongsa c", "weight": 1.0, "cooccur": 3, "pmi": 7.8288},
+    {"source": "httpurl", "target": "kav senjulung", "weight": 1.0, "cooccur": 3, "pmi": 7.8288},
+    {"source": "kav senjulung", "target": "nongsa c", "weight": 1.0, "cooccur": 3, "pmi": 7.8288},
+    {"source": "2045", "target": "mitra dapur bigboss", "weight": 0.9876, "cooccur": 12, "pmi": 6.3625},
+    {"source": "2045", "target": "sppg hilir kantor iv ngabang", "weight": 0.9876, "cooccur": 12, "pmi": 6.3625},
+    {"source": "mitra dapur bigboss", "target": "sppg hilir kantor iv ngabang", "weight": 1.0, "cooccur": 13, "pmi": 6.3625},
+    {"source": "seminar koperasi desa kelurahan merah putih", "target": "lampung", "weight": 0.7088, "cooccur": 3, "pmi": 5.5487},
+    {"source": "susu", "target": "susu pasteurisasi uht", "weight": 0.7785, "cooccur": 4, "pmi": 5.8711},
+    {"source": "susu pasteurisasi uht", "target": "susu steril full cream plain", "weight": 0.898, "cooccur": 3, "pmi": 7.0303},
+    {"source": "susu pasteurisasi", "target": "susu segar", "weight": 0.7951, "cooccur": 4, "pmi": 5.9963},
+    {"source": "susu pasteurisasi", "target": "susu uht susu steril full cream plain", "weight": 0.8247, "cooccur": 4, "pmi": 6.2194},
+    {"source": "susu segar", "target": "susu uht susu steril full cream plain", "weight": 0.9704, "cooccur": 4, "pmi": 7.318},
+    {"source": "zulhas", "target": "seminar koperasi desa kelurahan merah putih kdkmp", "weight": 0.838, "cooccur": 3, "pmi": 6.5603},
+    {"source": "agus haris", "target": "makodim 0809 kota bontang", "weight": 0.9704, "cooccur": 4, "pmi": 7.318},
+    {"source": "agus haris", "target": "wakil wali kota bontang", "weight": 1.0, "cooccur": 5, "pmi": 7.318},
+    {"source": "makodim 0809 kota bontang", "target": "wakil wali kota bontang", "weight": 0.9704, "cooccur": 4, "pmi": 7.318},
 ]
 
 def format_node(raw_name: str, node_type: str, mention_count: int, topic: Optional[str] = None, keywords: Optional[List[str]] = None) -> Dict[str, Any]:
@@ -216,12 +328,14 @@ def fetch_live_neo4j_graph(
 ) -> Optional[Dict[str, Any]]:
     """
     Mengambil data jaringan Knowledge Graph secara LIVE dari Neo4j di Port 7687.
-    Memetakan 8 tipe entitas resmi MBG (person, organization, geopolitical, location, product, event, norm, facility).
+    Memetakan 8 tipe entitas resmi MBG (person, organization, geopolitical, location, product, event, norm, facility)
+    serta 2 tipe relasi: BELONGS_TO_TOPIC dan CO_OCCURS_WITH.
     """
-    if not neo4j_driver:
+    driver = get_neo4j_driver()
+    if not driver:
         return None
     try:
-        with neo4j_driver.session() as session:
+        with driver.session() as session:
             # 1. Fetch Topics
             topics_data = session.run(
                 "MATCH (t:Topic) RETURN t.name as name, t.parent_topic as parent_topic, t.n_communities as n_communities, t.keywords as keywords"
@@ -242,6 +356,18 @@ def fetch_live_neo4j_graph(
                 "MATCH (a:Entity)-[r:CO_OCCURS_WITH]->(b:Entity) RETURN a.name as source, b.name as target, type(r) as type, r.weight as weight, r.cooccur as cooccur, r.pmi as pmi"
             ).data()
 
+            all_entities_map: Dict[str, Dict[str, Any]] = {}
+            for e in entities_data:
+                e_name = (e.get("name") or "").strip()
+                if not e_name:
+                    continue
+                all_entities_map[e_name] = {
+                    "name": e_name,
+                    "type": (e.get("type") or "entity").lower(),
+                    "mention_count": int(e.get("mention_count") or 1),
+                    "topic": (e.get("topic") or "").strip() or None
+                }
+
             nodes_dict: Dict[str, Dict[str, Any]] = {}
             active_topic_filter = topic.strip() if topic and topic.strip() and topic.lower() != "all" else None
             active_type_filter = entity_type.strip().lower() if entity_type and entity_type.strip() and entity_type.lower() != "all" else None
@@ -249,7 +375,7 @@ def fetch_live_neo4j_graph(
 
             # Insert Topics
             for t in topics_data:
-                t_name = t.get("name")
+                t_name = (t.get("name") or "").strip()
                 if not t_name:
                     continue
                 if active_topic_filter and t_name.lower() != active_topic_filter.lower():
@@ -257,63 +383,89 @@ def fetch_live_neo4j_graph(
                 node = format_node(t_name, "topic", 40, keywords=t.get("keywords"))
                 nodes_dict[node["id"]] = node
 
-            # Insert Entities
-            for e in entities_data:
-                e_name = e.get("name")
-                if not e_name:
-                    continue
-                e_type = (e.get("type") or "entity").lower()
-                e_cnt = int(e.get("mention_count") or 1)
-                e_topic = e.get("topic")
+            # Insert Entities matching filter
+            matched_entity_names = set()
+            for e_name, e_info in all_entities_map.items():
+                e_type = e_info["type"]
+                e_cnt = e_info["mention_count"]
+                e_topic = e_info["topic"]
 
-                # Filters
-                if active_type_filter and e_type != active_type_filter:
+                if active_type_filter and active_type_filter != "topic" and e_type != active_type_filter:
                     continue
                 if active_topic_filter and e_topic and e_topic.lower() != active_topic_filter.lower():
                     continue
                 if threshold > 0 and e_cnt < threshold:
                     continue
 
+                matched_entity_names.add(e_name)
                 node = format_node(e_name, e_type, e_cnt, topic=e_topic)
                 nodes_dict[node["id"]] = node
 
-            # Build Edges
+            # Ensure 1-hop co-occurring neighbor entities are also included when filtering by entity_type so CO_OCCURS_WITH edges remain visible
+            if active_type_filter and active_type_filter != "topic":
+                for co in co_edges:
+                    s_name = (co.get("source") or "").strip()
+                    t_name = (co.get("target") or "").strip()
+                    if s_name in matched_entity_names and t_name in all_entities_map:
+                        nb = all_entities_map[t_name]
+                        if threshold <= 0 or nb["mention_count"] >= threshold:
+                            nb_node = format_node(nb["name"], nb["type"], nb["mention_count"], topic=nb["topic"])
+                            nodes_dict[nb_node["id"]] = nb_node
+                    elif t_name in matched_entity_names and s_name in all_entities_map:
+                        nb = all_entities_map[s_name]
+                        if threshold <= 0 or nb["mention_count"] >= threshold:
+                            nb_node = format_node(nb["name"], nb["type"], nb["mention_count"], topic=nb["topic"])
+                            nodes_dict[nb_node["id"]] = nb_node
+
+            # Build Edges (2 Tipe Edge: BELONGS_TO_TOPIC & CO_OCCURS_WITH)
             edges_list: List[Dict[str, Any]] = []
             for bt in bt_edges:
-                src_id = f"entity_{bt['source']}"
-                tgt_id = f"topic_{bt['target']}"
+                s_name = (bt.get("source") or "").strip()
+                t_name = (bt.get("target") or "").strip()
+                src_id = f"entity_{s_name}"
+                tgt_id = f"topic_{t_name}"
                 if src_id in nodes_dict and tgt_id in nodes_dict:
                     edges_list.append({
-                        "id": f"rel_bt_{bt['source']}_{bt['target']}",
+                        "id": f"rel_bt_{s_name}_{t_name}",
                         "from": src_id,
                         "to": tgt_id,
                         "source": src_id,
                         "target": tgt_id,
+                        "source_name": s_name,
+                        "target_name": t_name,
                         "label": "BELONGS_TO_TOPIC",
                         "type": "BELONGS_TO_TOPIC",
+                        "relationship": "BELONGS_TO_TOPIC",
                         "weight": 1,
                         "value": 1,
                         "style": "dashed"
                     })
 
             for co in co_edges:
-                src_id = f"entity_{co['source']}"
-                tgt_id = f"entity_{co['target']}"
-                w = float(co.get("weight") or 1.0)
-                cooccur = int(co.get("cooccur") or 1)
+                s_name = (co.get("source") or "").strip()
+                t_name = (co.get("target") or "").strip()
+                src_id = f"entity_{s_name}"
+                tgt_id = f"entity_{t_name}"
+                w = float(co.get("weight") or 0.5)
+                cooccur = int(co.get("cooccur") or 3)
+                pmi_val = float(co.get("pmi") or 0.0)
                 if src_id in nodes_dict and tgt_id in nodes_dict:
                     edges_list.append({
-                        "id": f"rel_co_{co['source']}_{co['target']}",
+                        "id": f"rel_co_{s_name}_{t_name}",
                         "from": src_id,
                         "to": tgt_id,
                         "source": src_id,
                         "target": tgt_id,
-                        "label": f"NPMI {w:.2f}",
+                        "source_name": s_name,
+                        "target_name": t_name,
+                        "label": f"CO_OCCURS_WITH (NPMI {w:.2f})",
                         "type": "CO_OCCURS_WITH",
-                        "weight": round(w * 10, 1),
+                        "relationship": "CO_OCCURS_WITH",
+                        "weight": round(w, 4),
+                        "npmi": round(w, 4),
                         "value": cooccur,
                         "cooccur": cooccur,
-                        "pmi": float(co.get("pmi") or 0.0),
+                        "pmi": round(pmi_val, 4),
                         "style": "solid"
                     })
 
@@ -342,51 +494,110 @@ def build_mbg_graph_data(
     topic: Optional[str] = None
 ) -> Dict[str, Any]:
     """
-    Fallback data Knowledge Graph MBG (128 Entitas & 9 Topik) jika Neo4j port 7687 sedang offline.
+    Fallback data Knowledge Graph MBG (128 Entitas, 9 Topik, 128 BELONGS_TO_TOPIC, 109 CO_OCCURS_WITH)
+    jika Neo4j port 7687 sedang offline.
     """
     nodes_dict: Dict[str, Dict[str, Any]] = {}
     threshold = int(min_freq or 0)
     active_type = entity_type.strip().lower() if entity_type and entity_type.strip() and entity_type.lower() != "all" else None
     active_topic = topic.strip().lower() if topic and topic.strip() and topic.lower() != "all" else None
 
-    # Topics
+    all_entities_map = {e["name"]: e for e in MBG_ENTITIES_FALLBACK}
+
+    # 1. Topics (9 Topik)
     for t_name in MBG_TOPICS_FALLBACK:
         if active_topic and t_name.lower() != active_topic:
             continue
         node = format_node(t_name, "topic", 40)
         nodes_dict[node["id"]] = node
 
-    # Entities
-    edges_list: List[Dict[str, Any]] = []
+    # 2. Entities (128 Entitas)
+    matched_entity_names = set()
     for ent in MBG_ENTITIES_FALLBACK:
+        e_name = ent["name"]
         e_type = ent["type"].lower()
         e_cnt = ent["mention_count"]
         e_top = ent["topic"]
 
-        if active_type and e_type != active_type:
+        if active_type and active_type != "topic" and e_type != active_type:
             continue
         if active_topic and e_top.lower() != active_topic:
             continue
         if threshold > 0 and e_cnt < threshold:
             continue
 
-        node = format_node(ent["name"], e_type, e_cnt, topic=e_top)
+        matched_entity_names.add(e_name)
+        node = format_node(e_name, e_type, e_cnt, topic=e_top)
         nodes_dict[node["id"]] = node
 
-        # Relasi ke topik
-        t_id = f"topic_{e_top}"
-        if t_id in nodes_dict:
+    # Keep 1-hop neighbor entities for CO_OCCURS_WITH when filtering by entity_type
+    if active_type and active_type != "topic":
+        for co in MBG_CO_OCCURS_FALLBACK:
+            s_name = co["source"]
+            t_name = co["target"]
+            if s_name in matched_entity_names and t_name in all_entities_map:
+                nb = all_entities_map[t_name]
+                if threshold <= 0 or nb["mention_count"] >= threshold:
+                    nb_node = format_node(nb["name"], nb["type"].lower(), nb["mention_count"], topic=nb["topic"])
+                    nodes_dict[nb_node["id"]] = nb_node
+            elif t_name in matched_entity_names and s_name in all_entities_map:
+                nb = all_entities_map[s_name]
+                if threshold <= 0 or nb["mention_count"] >= threshold:
+                    nb_node = format_node(nb["name"], nb["type"].lower(), nb["mention_count"], topic=nb["topic"])
+                    nodes_dict[nb_node["id"]] = nb_node
+
+    edges_list: List[Dict[str, Any]] = []
+
+    # 3. Edge Tipe 1: BELONGS_TO_TOPIC (128 relasi)
+    for ent in MBG_ENTITIES_FALLBACK:
+        e_name = ent["name"]
+        e_top = ent["topic"]
+        src_id = f"entity_{e_name}"
+        tgt_id = f"topic_{e_top}"
+        if src_id in nodes_dict and tgt_id in nodes_dict:
             edges_list.append({
-                "id": f"rel_bt_{ent['name']}_{e_top}",
-                "from": node["id"],
-                "to": t_id,
-                "source": node["id"],
-                "target": t_id,
+                "id": f"rel_bt_{e_name}_{e_top}",
+                "from": src_id,
+                "to": tgt_id,
+                "source": src_id,
+                "target": tgt_id,
+                "source_name": e_name,
+                "target_name": e_top,
                 "label": "BELONGS_TO_TOPIC",
                 "type": "BELONGS_TO_TOPIC",
+                "relationship": "BELONGS_TO_TOPIC",
                 "weight": 1,
                 "value": 1,
                 "style": "dashed"
+            })
+
+    # 4. Edge Tipe 2: CO_OCCURS_WITH (109 relasi ko-okurensi antar-entitas)
+    for co in MBG_CO_OCCURS_FALLBACK:
+        s_name = co["source"]
+        t_name = co["target"]
+        src_id = f"entity_{s_name}"
+        tgt_id = f"entity_{t_name}"
+        w = float(co["weight"])
+        cooccur = int(co["cooccur"])
+        pmi_val = float(co["pmi"])
+        if src_id in nodes_dict and tgt_id in nodes_dict:
+            edges_list.append({
+                "id": f"rel_co_{s_name}_{t_name}",
+                "from": src_id,
+                "to": tgt_id,
+                "source": src_id,
+                "target": tgt_id,
+                "source_name": s_name,
+                "target_name": t_name,
+                "label": f"CO_OCCURS_WITH (NPMI {w:.2f})",
+                "type": "CO_OCCURS_WITH",
+                "relationship": "CO_OCCURS_WITH",
+                "weight": round(w, 4),
+                "npmi": round(w, 4),
+                "value": cooccur,
+                "cooccur": cooccur,
+                "pmi": round(pmi_val, 4),
+                "style": "solid"
             })
 
     nodes_list = list(nodes_dict.values())

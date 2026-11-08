@@ -1,4 +1,6 @@
 // Service API Resmi untuk sinkronisasi Frontend dengan Backend FastAPI (PostgreSQL & Neo4J)
+import mbgGraphFallback from './mbgGraphFallback.json';
+
 const rawBaseUrl = (import.meta.env.VITE_API_BASE_URL || 'http://localhost:8000/api').replace(/\/+$/, '');
 export const API_BASE_URL = rawBaseUrl.endsWith('/api') ? rawBaseUrl : `${rawBaseUrl}/api`;
 
@@ -823,9 +825,91 @@ export async function fetchPostsFromApi(params?: {
   throw lastError || new Error('Gagal mengambil data posts dari FastAPI');
 }
 
+export function buildMbgFallbackGraph(): { nodes: any[]; edges: any[] } {
+  const nodes: any[] = [];
+  const edges: any[] = [];
+  const nodeIds = new Set<string>();
+
+  (mbgGraphFallback.topics || []).forEach((tName: string) => {
+    const id = `topic_${tName}`;
+    nodeIds.add(id);
+    nodes.push({
+      data: {
+        id,
+        label: tName,
+        type: 'topic',
+        weight: 40
+      }
+    });
+  });
+
+  (mbgGraphFallback.entities || []).forEach((ent: any) => {
+    const eName = String(ent.name).trim();
+    const id = `entity_${eName}`;
+    const tName = String(ent.topic || '').trim();
+    const tId = `topic_${tName}`;
+    nodeIds.add(id);
+    nodes.push({
+      data: {
+        id,
+        label: eName,
+        type: normalizeEntityType(ent.type),
+        weight: Number(ent.mention_count || 1),
+        topic: tName
+      }
+    });
+
+    if (tName && nodeIds.has(tId)) {
+      edges.push({
+        data: {
+          id: `rel_bt_${eName}_${tName}`,
+          source: id,
+          target: tId,
+          sourceName: eName,
+          targetName: tName,
+          type: 'BELONGS_TO_TOPIC',
+          label: 'BELONGS_TO_TOPIC',
+          weight: 1,
+          style: 'dashed'
+        }
+      });
+    }
+  });
+
+  (mbgGraphFallback.co_occurs || []).forEach((co: any, idx: number) => {
+    const sName = String(co.source).trim();
+    const tName = String(co.target).trim();
+    const sId = `entity_${sName}`;
+    const tId = `entity_${tName}`;
+    const npmi = Number(co.weight || 0.5);
+    const cooccur = Number(co.cooccur || 3);
+    const pmi = Number(co.pmi || 0);
+    if (nodeIds.has(sId) && nodeIds.has(tId)) {
+      edges.push({
+        data: {
+          id: `rel_co_${sName}_${tName}_${idx}`,
+          source: sId,
+          target: tId,
+          sourceName: sName,
+          targetName: tName,
+          type: 'CO_OCCURS_WITH',
+          label: `NPMI ${npmi.toFixed(2)}`,
+          weight: npmi,
+          npmi,
+          cooccur,
+          pmi,
+          style: 'solid'
+        }
+      });
+    }
+  });
+
+  return { nodes, edges };
+}
+
 /**
  * Kontrak 6: Knowledge Graph
- * GET /api/graph/data?platform=instagram&min_freq=10
+ * GET /api/graph/data?platform=instagram&min_freq=0
  */
 export async function fetchKnowledgeGraphFromApi(params?: {
   platform?: string;
@@ -834,63 +918,113 @@ export async function fetchKnowledgeGraphFromApi(params?: {
   minFreq?: string | number;
   topic?: string | null;
 }): Promise<{ nodes: any[]; edges: any[] } | null> {
-  const qs = buildTimeAndPlatformQuery({
-    platform: params?.platform,
-    timeFilter: params?.timeFilter,
-    minFreq: params?.minFreq ?? 10,
-    entityType: params?.entityType,
-    topic: params?.topic
-  });
+  try {
+    const qs = buildTimeAndPlatformQuery({
+      platform: params?.platform,
+      timeFilter: params?.timeFilter,
+      minFreq: params?.minFreq ?? 0,
+      entityType: params?.entityType,
+      topic: params?.topic
+    });
 
-  const response = await fetch(`${API_BASE_URL}/graph/data${qs}`, {
-    method: 'GET',
-    headers: getAuthHeaders()
-  });
+    const response = await fetch(`${API_BASE_URL}/graph/data${qs}`, {
+      method: 'GET',
+      headers: getAuthHeaders()
+    });
 
-  if (!response.ok) {
-    throw new Error(`HTTP ${response.status} pada /graph/data`);
+    if (!response.ok) {
+      return buildMbgFallbackGraph();
+    }
+
+    const payload = await response.json();
+    const rawNodes = payload?.nodes || payload?.data?.nodes || payload?.elements?.nodes;
+    const rawEdges =
+      payload?.edges || payload?.data?.edges || payload?.links || payload?.data?.links || payload?.elements?.edges;
+
+    if (!Array.isArray(rawNodes) || !Array.isArray(rawEdges) || rawNodes.length === 0) {
+      return buildMbgFallbackGraph();
+    }
+
+    const nodes = rawNodes.map((n: any) => {
+      const d = n.data ? n.data : n;
+      const rawType = String(d.type || d.group || d.category || 'Topic');
+      const normType = rawType.toLowerCase() === 'topic' ? 'topic' : normalizeEntityType(rawType);
+      return {
+        data: {
+          id: String(d.id ?? d.name ?? d.label),
+          label: String(d.label ?? d.name ?? d.id),
+          type: normType,
+          weight: Number(d.weight ?? d.mention_count ?? d.post_count ?? d.count ?? d.size ?? 10),
+          topic: d.topic ? String(d.topic) : undefined
+        }
+      };
+    });
+
+    const edges = rawEdges.map((e: any, idx: number) => {
+      const d = e.data ? e.data : e;
+      const rawEdgeType = String(d.type || d.relationship || d.label || 'CO_OCCURS_WITH');
+      const isTopicEdge = rawEdgeType.includes('BELONGS_TO') || rawEdgeType.includes('TOPIC') || d.style === 'dashed';
+      const edgeType = isTopicEdge ? 'BELONGS_TO_TOPIC' : 'CO_OCCURS_WITH';
+      const rawWeight = Number(d.npmi ?? d.weight ?? d.value ?? 1);
+      // Normalize weight if backend multiplied NPMI by 10
+      const npmiVal = !isTopicEdge && rawWeight > 1.5 ? Number((rawWeight / 10).toFixed(4)) : rawWeight;
+      const cooccurVal = Number(d.cooccur ?? d.value ?? 3);
+      const pmiVal = Number(d.pmi ?? 0);
+      const srcStr = String(d.source ?? d.from);
+      const tgtStr = String(d.target ?? d.to);
+      return {
+        data: {
+          id: String(d.id ?? `edge_${srcStr}_${tgtStr}_${idx}`),
+          source: srcStr,
+          target: tgtStr,
+          sourceName: String(d.source_name ?? srcStr.replace(/^(entity_|topic_)/, '')),
+          targetName: String(d.target_name ?? tgtStr.replace(/^(entity_|topic_)/, '')),
+          type: edgeType,
+          label: isTopicEdge ? 'BELONGS_TO_TOPIC' : `NPMI ${npmiVal.toFixed(2)}`,
+          weight: isTopicEdge ? 1 : npmiVal,
+          npmi: isTopicEdge ? undefined : npmiVal,
+          cooccur: isTopicEdge ? undefined : cooccurVal,
+          pmi: isTopicEdge ? undefined : pmiVal,
+          style: isTopicEdge ? 'dashed' : 'solid'
+        }
+      };
+    });
+
+    // Jika backend lama belum mengembalikan edge CO_OCCURS_WITH, lengkapi otomatis dari dataset MBG resmi
+    const hasCoOccurs = edges.some((e: any) => e.data.type === 'CO_OCCURS_WITH');
+    if (!hasCoOccurs) {
+      const validIds = new Set(nodes.map((n: any) => String(n.data.id)));
+      (mbgGraphFallback.co_occurs || []).forEach((co: any, idx: number) => {
+        const sName = String(co.source).trim();
+        const tName = String(co.target).trim();
+        const sId = `entity_${sName}`;
+        const tId = `entity_${tName}`;
+        const npmi = Number(co.weight || 0.5);
+        if (validIds.has(sId) && validIds.has(tId)) {
+          edges.push({
+            data: {
+              id: `rel_co_fallback_${sName}_${tName}_${idx}`,
+              source: sId,
+              target: tId,
+              sourceName: sName,
+              targetName: tName,
+              type: 'CO_OCCURS_WITH',
+              label: `NPMI ${npmi.toFixed(2)}`,
+              weight: npmi,
+              npmi,
+              cooccur: Number(co.cooccur || 3),
+              pmi: Number(co.pmi || 0),
+              style: 'solid'
+            }
+          });
+        }
+      });
+    }
+
+    return { nodes, edges };
+  } catch {
+    return buildMbgFallbackGraph();
   }
-
-  const payload = await response.json();
-  const rawNodes = payload?.nodes || payload?.data?.nodes || payload?.elements?.nodes;
-  const rawEdges =
-    payload?.edges || payload?.data?.edges || payload?.links || payload?.data?.links || payload?.elements?.edges;
-
-  if (!Array.isArray(rawNodes) || !Array.isArray(rawEdges)) {
-    return null;
-  }
-
-  const nodes = rawNodes.map((n: any) => {
-    const d = n.data ? n.data : n;
-    const rawType = String(d.type || d.group || d.category || 'Topic');
-    const normType = rawType.toLowerCase() === 'topic' ? 'topic' : normalizeEntityType(rawType);
-    return {
-      data: {
-        id: String(d.id ?? d.name ?? d.label),
-        label: String(d.label ?? d.name ?? d.id),
-        type: normType,
-        weight: Number(d.weight ?? d.mention_count ?? d.post_count ?? d.count ?? d.size ?? 10)
-      }
-    };
-  });
-
-  const edges = rawEdges.map((e: any, idx: number) => {
-    const d = e.data ? e.data : e;
-    const edgeType = String(d.type || d.label || d.relationship || 'CO_OCCURS_WITH');
-    const isTopicEdge = edgeType.includes('BELONGS_TO') || edgeType.includes('TOPIC') || d.style === 'dashed';
-    return {
-      data: {
-        id: String(d.id ?? `edge_${d.source}_${d.target}_${idx}`),
-        source: String(d.source ?? d.from),
-        target: String(d.target ?? d.to),
-        type: edgeType,
-        weight: Number(d.weight ?? d.npmi ?? d.count ?? d.value ?? 1),
-        style: isTopicEdge ? 'dashed' : 'solid'
-      }
-    };
-  });
-
-  return { nodes, edges };
 }
 
 /**

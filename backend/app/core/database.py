@@ -41,17 +41,23 @@ for u in neo4j_uris:
         seen_uris.add(u)
         candidate_uris.append(u)
 
-for uri in candidate_uris:
-    try:
-        from neo4j import GraphDatabase
-        auth = (settings.NEO4J_USER, settings.NEO4J_PASSWORD) if settings.NEO4J_PASSWORD else None
-        candidate_driver = GraphDatabase.driver(uri, auth=auth, connection_timeout=3)
-        candidate_driver.verify_connectivity()
-        neo4j_driver = candidate_driver
-        print(f"[NEO4J] Berhasil terhubung ke Neo4j Knowledge Graph di: {uri}")
-        break
-    except Exception:
-        pass
+def get_neo4j_driver():
+    global neo4j_driver
+    if neo4j_driver is not None:
+        return neo4j_driver
+    for uri in candidate_uris:
+        try:
+            from neo4j import GraphDatabase
+            auth = (settings.NEO4J_USER, settings.NEO4J_PASSWORD) if settings.NEO4J_PASSWORD else None
+            candidate_driver = GraphDatabase.driver(uri, auth=auth, connection_timeout=6)
+            candidate_driver.verify_connectivity()
+            neo4j_driver = candidate_driver
+            print(f"[NEO4J] Berhasil terhubung ke Neo4j Knowledge Graph di: {uri}")
+            return neo4j_driver
+        except Exception:
+            pass
+    return None
 
+get_neo4j_driver()
 if not neo4j_driver:
     print("[NEO4J] Port 7687 belum aktif atau tidak dapat dijangkau. Knowledge Graph akan menggunakan data fallback.")
