@@ -1,8 +1,0 @@
-playwright==1.44.0
-greenstalk==2.1.1
-python-dotenv==1.0.1
-blinker==1.5
-selenium-wire==5.1.0
-beanstalkc3
-requests==2.31.0
-boto3==1.34.0
