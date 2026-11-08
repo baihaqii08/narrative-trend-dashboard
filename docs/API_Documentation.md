@@ -77,7 +77,7 @@ Mengambil profil pengguna yang sedang login. Membutuhkan Bearer Token.
 *(Semua endpoint dashboard dilengkapi fitur in-memory cache dengan TTL 60 detik untuk mempercepat performa).*
 
 ### 2.1. Dashboard Overview (KPI)
-Menampilkan ringkasan total (posts, topics, engagement) dari dataset bersih Karhutla (14.241 postingan).
+Menampilkan ringkasan total (posts, topics, engagement) dari dataset bersih Makan Bergizi Gratis / MBG (12.615 postingan).
 - **URL**: `/dashboard/overview` (Full: `http://localhost:8000/api/dashboard/overview`)
 - **Method**: `GET`
 - **Response (200 OK)**:
@@ -98,7 +98,7 @@ Menampilkan ringkasan total (posts, topics, engagement) dari dataset bersih Karh
   ```
 
 ### 2.2. Trend Timeline
-Menampilkan deret waktu jumlah publikasi harian terkait Karhutla. Cocok untuk visualisasi Line Chart.
+Menampilkan deret waktu jumlah publikasi harian terkait Makan Bergizi Gratis (MBG). Cocok untuk visualisasi Line Chart.
 - **URL**: `/dashboard/timeline`
 - **Method**: `GET`
 - **Query Parameters**:
@@ -120,7 +120,7 @@ Menampilkan deret waktu jumlah publikasi harian terkait Karhutla. Cocok untuk vi
   ```
 
 ### 2.3. Sentiment Distribution
-Menampilkan distribusi sentimen dari seluruh data teks Karhutla (untuk visualisasi Pie/Donut chart).
+Menampilkan distribusi sentimen dari seluruh data teks Makan Bergizi Gratis (MBG) (untuk visualisasi Pie/Donut chart).
 - **URL**: `/dashboard/sentiment`
 - **Method**: `GET`
 - **Response (200 OK)**:
@@ -134,7 +134,7 @@ Menampilkan distribusi sentimen dari seluruh data teks Karhutla (untuk visualisa
   ```
 
 ### 2.4. Top Trending Topics
-Menampilkan daftar sub-topik (keyword) teratas yang paling banyak dibicarakan terkait isu Karhutla.
+Menampilkan daftar sub-topik (keyword) teratas yang paling banyak dibicarakan terkait isu Makan Bergizi Gratis (MBG).
 - **URL**: `/dashboard/topics`
 - **Method**: `GET`
 - **Query Parameters**:
@@ -146,9 +146,9 @@ Menampilkan daftar sub-topik (keyword) teratas yang paling banyak dibicarakan te
     "trending_topics": [
       {
         "id": 1,
-        "name": "Bencana Karhutla & Titik Api Lahan Gambut",
+        "name": "Program Makan Bergizi Gratis (MBG)",
         "post_count": 5420,
-        "keywords": ["karhutla", "kebakaran hutan", "lahan gambut", "titik api", "kalimantan", "sumatera"]
+        "keywords": ["mbg", "makan bergizi gratis", "bgn", "sppg", "menu mbg", "gizi anak"]
       },
       {
         "id": 2,
@@ -158,9 +158,9 @@ Menampilkan daftar sub-topik (keyword) teratas yang paling banyak dibicarakan te
       },
       {
         "id": 3,
-        "name": "Satgas Manggala Agni & Penegakan Hukum",
+        "name": "Tata Kelola SPPG & Badan Gizi Nasional (BGN)",
         "post_count": 2650,
-        "keywords": ["manggala agni", "satgas karhutla", "patroli karhutla", "bnpb"]
+        "keywords": ["badan gizi nasional", "sppg", "dapur mbg", "keamanan pangan", "umkm"]
       },
       {
         "id": 4,
@@ -177,7 +177,7 @@ Menampilkan daftar sub-topik (keyword) teratas yang paling banyak dibicarakan te
 ## 3. Global Search API
 
 ### 3.1. Filtered Search
-Melakukan pencarian penuh (Full-Text Search) pada arsip data Karhutla menggunakan parameter khusus (ILIKE db native).
+Melakukan pencarian penuh (Full-Text Search) pada arsip data Makan Bergizi Gratis (MBG) menggunakan parameter khusus (ILIKE db native).
 - **URL**: `/search` (Full: `http://localhost:8000/api/search`)
 - **Method**: `GET`
 - **Query Parameters**:
@@ -194,7 +194,7 @@ Melakukan pencarian penuh (Full-Text Search) pada arsip data Karhutla menggunaka
     {
       "platform": "twitter",
       "author_username": "indepenSumatera",
-      "content": "Kebakaran hutan dan lahan (karhutla) kembali melanda kawasan Sampit. Kobaran api membakar lahan gambut membuat asap pekat mulai menyelimuti pemukiman warga.",
+      "content": "Program Makan Bergizi Gratis (MBG) resmi berjalan di ribuan sekolah dan membantu pemenuhan gizi harian siswa sekaligus memberdayakan katering UMKM daerah.",
       "posted_at": "2026-09-02T08:45:10Z",
       "sentiment": "negative",
       "likes": 820

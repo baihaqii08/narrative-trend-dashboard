@@ -11,10 +11,10 @@ import boto3
 from botocore.client import Config
 from validator import moderate_content
 
-# Konfigurasi Koneksi MinIO (Data Lake Faiq)
-S3_ENDPOINT = 'https://ventral-unfondly-rosalyn.ngrok-free.dev' 
-ACCESS_KEY = 'admin'
-SECRET_KEY = 'password123'
+# Konfigurasi Koneksi MinIO (Data Lake)
+S3_ENDPOINT = os.getenv('MINIO_ENDPOINT', 'http://localhost:9000') 
+ACCESS_KEY = os.getenv('MINIO_ACCESS_KEY', '')
+SECRET_KEY = os.getenv('MINIO_SECRET_KEY', '')
 BUCKET_NAME = 'narative-datalake'
 
 

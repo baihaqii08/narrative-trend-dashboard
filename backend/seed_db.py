@@ -3,7 +3,6 @@ import os
 if hasattr(sys.stdout, 'reconfigure'):
     sys.stdout.reconfigure(encoding='utf-8')
 from datetime import datetime, timedelta
-import random
 
 current_dir = os.path.dirname(os.path.abspath(__file__))
 if current_dir not in sys.path:

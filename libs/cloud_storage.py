@@ -15,7 +15,7 @@ class CloudDataLake:
         # Jika tidak ada, defaultnya disesuaikan untuk MinIO lokal saat ini
         self.endpoint_url = os.getenv('S3_ENDPOINT') or os.getenv('MINIO_ENDPOINT', 'http://localhost:9000')
         self.access_key = os.getenv('AWS_ACCESS_KEY_ID') or os.getenv('MINIO_ROOT_USER', 'admin')
-        self.secret_key = os.getenv('AWS_SECRET_ACCESS_KEY') or os.getenv('MINIO_ROOT_PASSWORD', 'password123')
+        self.secret_key = os.getenv('AWS_SECRET_ACCESS_KEY') or os.getenv('MINIO_ROOT_PASSWORD', '')
         
         # Tambahkan http:// jika tidak ada (Boto3 butuh skema URL)
         if not self.endpoint_url.startswith('http'):

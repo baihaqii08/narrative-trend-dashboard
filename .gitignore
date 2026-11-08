@@ -109,3 +109,10 @@ pipeline/twitter_profile/
 ehthumbs.db
 Thumbs.db
 Desktop.ini
+
+# Raw Scrape Batches & Logs
+pipeline/raw_batches/
+pipeline/uploaded_bronze_batches/
+pipeline/audit_log_*.txt
+pipeline/processed_tweet_ids.json
+backend/evidence.txt
