@@ -20,17 +20,28 @@ import {
 } from '../../services/api';
 
 const getEntityTypeBadge = (type: string) => {
-  switch (normalizeEntityType(type)) {
-    case 'Location':
-      return { bg: '#dcfce7', color: '#15803d' };
-    case 'Organization':
-      return { bg: '#dbeafe', color: '#1d4ed8' };
-    case 'Person':
-      return { bg: '#f3e8ff', color: '#7e22ce' };
-    case 'Topic':
-      return { bg: '#ffedd5', color: '#c2410c' };
+  const normType = normalizeEntityType(type).toLowerCase();
+  switch (normType) {
+    case 'person':
+      return { bg: '#f3e8ff', color: '#7e22ce', border: '#d8b4fe' };
+    case 'organization':
+      return { bg: '#eff6ff', color: '#1d4ed8', border: '#bfdbfe' };
+    case 'geopolitical':
+      return { bg: '#ecfeff', color: '#0e7490', border: '#a5f3fc' };
+    case 'location':
+      return { bg: '#ecfdf5', color: '#047857', border: '#a7f3d0' };
+    case 'product':
+      return { bg: '#fefce8', color: '#b45309', border: '#fde047' };
+    case 'event':
+      return { bg: '#fdf2f8', color: '#be185d', border: '#fbcfe8' };
+    case 'norm':
+      return { bg: '#fef2f2', color: '#dc2626', border: '#fecaca' };
+    case 'facility':
+      return { bg: '#f0fdfa', color: '#0f766e', border: '#99f6e4' };
+    case 'topic':
+      return { bg: '#fff7ed', color: '#c2410c', border: '#fed7aa' };
     default:
-      return { bg: '#f1f5f9', color: '#475569' };
+      return { bg: '#f1f5f9', color: '#475569', border: '#e2e8f0' };
   }
 };
 
@@ -98,13 +109,15 @@ function Overview({ theme, isDark, timeFilter = 'all', setTimeFilter, platformFi
         setTopicsApiData(topicsRes.value);
         anySuccess = true;
       }
-      if (postsRes.status === 'fulfilled') {
+      if (postsRes.status === 'fulfilled' && postsRes.value.length > 0) {
         setSocialDataRaw(postsRes.value);
         anySuccess = true;
       }
 
-      if (!anySuccess && overviewRes.status === 'rejected' && postsRes.status === 'rejected') {
-        throw overviewRes.reason || postsRes.reason;
+      if (!anySuccess) {
+        setApiError(
+          `Gagal memuat data dari Backend (${import.meta.env.VITE_API_BASE_URL || 'http://localhost:8000/api'}). Pastikan server FastAPI menyala dan database terhubung.`
+        );
       }
 
       const now = new Date();
@@ -179,7 +192,13 @@ function Overview({ theme, isDark, timeFilter = 'all', setTimeFilter, platformFi
 
   // Filter socialData dynamically based on activeTab platform
   const socialData = useMemo(() => {
-    return timeFilteredRaw.filter(item => item.platform && item.platform.toLowerCase() === activeTab.toLowerCase());
+    return timeFilteredRaw.filter(item => {
+      const p = item.platform ? item.platform.toLowerCase() : '';
+      if (activeTab === 'x') {
+        return p === 'x' || p === 'twitter';
+      }
+      return p === 'instagram' || p === 'ig';
+    });
   }, [timeFilteredRaw, activeTab]);
 
   // Derived Statistics from PostgreSQL Database (combining dedicated API endpoints & posts data)
@@ -316,7 +335,7 @@ function Overview({ theme, isDark, timeFilter = 'all', setTimeFilter, platformFi
         ? overviewApiData.topTopics.slice(0, 4)
         : postsDerivedTopics;
 
-    const firstDbTopic = overviewApiData?.dominantTopic || (topTopicsData.length > 0 ? topTopicsData[0].title : 'Makan Bergizi Gratis');
+    const firstDbTopic = overviewApiData?.dominantTopic || (topTopicsData.length > 0 ? topTopicsData[0].title : 'Program Makan Bergizi Gratis (MBG)');
 
     // Top Positive / Negative / Neutral Topic dari database
     const sortedPosTopics = Object.entries(posTopicCounts).sort((a, b) => b[1] - a[1]);
@@ -331,6 +350,8 @@ function Overview({ theme, isDark, timeFilter = 'all', setTimeFilter, platformFi
 
     const sortedNeuTopics = Object.entries(neuTopicCounts).sort((a, b) => b[1] - a[1]);
     const topNeutralTopic =
+      overviewApiData?.topNeutralTopic ||
+      (sortedNeuTopics.length > 0 ? sortedNeuTopics[0][0] : firstDbTopic);
       overviewApiData?.topNeutralTopic ||
       (sortedNeuTopics.length > 0 ? sortedNeuTopics[0][0] : firstDbTopic);
 
@@ -409,7 +430,7 @@ function Overview({ theme, isDark, timeFilter = 'all', setTimeFilter, platformFi
       let instaTotal = 0, xTotal = 0;
       timeFilteredRaw.forEach(item => {
         const p = item.platform?.toLowerCase();
-        if (p === 'instagram') instaTotal++;
+        if (p === 'instagram' || p === 'ig') instaTotal++;
         else if (p === 'twitter' || p === 'x') xTotal++;
       });
       const totalDist = instaTotal + xTotal;
@@ -500,7 +521,7 @@ function Overview({ theme, isDark, timeFilter = 'all', setTimeFilter, platformFi
       const dayKey = `${String(d.getDate()).padStart(2, '0')} ${d.toLocaleString('default', { month: 'short' })}`;
       if (dayKey !== selectedDate) return;
       const p = item.platform?.toLowerCase();
-      if (p === 'instagram') instaTotal++;
+      if (p === 'instagram' || p === 'ig') instaTotal++;
       else if (p === 'twitter' || p === 'x') xTotal++;
     });
     const totalDist = instaTotal + xTotal;
@@ -573,23 +594,29 @@ function Overview({ theme, isDark, timeFilter = 'all', setTimeFilter, platformFi
     });
 
     let prevItems: any[] = [];
+    const isPlatformMatch = (p?: string) => {
+      if (!p) return false;
+      const pl = p.toLowerCase();
+      return activeTab === 'x' ? (pl === 'x' || pl === 'twitter') : (pl === 'instagram' || pl === 'ig');
+    };
+
     if (timeFilter === 'last7') {
       const c1 = new Date(maxDate); c1.setDate(c1.getDate() - 7);
       const c2 = new Date(maxDate); c2.setDate(c2.getDate() - 14);
-      prevItems = socialDataRaw.filter(d => d.platform && d.platform.toLowerCase() === activeTab.toLowerCase() && new Date(d.timestamp) >= c2 && new Date(d.timestamp) < c1);
+      prevItems = socialDataRaw.filter(d => isPlatformMatch(d.platform) && new Date(d.timestamp) >= c2 && new Date(d.timestamp) < c1);
     } else if (timeFilter === 'last14') {
       const c1 = new Date(maxDate); c1.setDate(c1.getDate() - 14);
       const c2 = new Date(maxDate); c2.setDate(c2.getDate() - 28);
-      prevItems = socialDataRaw.filter(d => d.platform && d.platform.toLowerCase() === activeTab.toLowerCase() && new Date(d.timestamp) >= c2 && new Date(d.timestamp) < c1);
+      prevItems = socialDataRaw.filter(d => isPlatformMatch(d.platform) && new Date(d.timestamp) >= c2 && new Date(d.timestamp) < c1);
     } else if (timeFilter === 'last30') {
       const c1 = new Date(maxDate); c1.setDate(c1.getDate() - 30);
       const c2 = new Date(maxDate); c2.setDate(c2.getDate() - 60);
-      prevItems = socialDataRaw.filter(d => d.platform && d.platform.toLowerCase() === activeTab.toLowerCase() && new Date(d.timestamp) >= c2 && new Date(d.timestamp) < c1);
+      prevItems = socialDataRaw.filter(d => isPlatformMatch(d.platform) && new Date(d.timestamp) >= c2 && new Date(d.timestamp) < c1);
     } else {
       let minDate = new Date(maxDate);
       socialDataRaw.forEach(d => { const dt = new Date(d.timestamp); if (dt < minDate) minDate = dt; });
       const mid = new Date((minDate.getTime() + maxDate.getTime()) / 2);
-      prevItems = socialDataRaw.filter(d => d.platform && d.platform.toLowerCase() === activeTab.toLowerCase() && new Date(d.timestamp) < mid);
+      prevItems = socialDataRaw.filter(d => isPlatformMatch(d.platform) && new Date(d.timestamp) < mid);
     }
 
     const prevTotal = prevItems.length || 1;
@@ -629,16 +656,16 @@ function Overview({ theme, isDark, timeFilter = 'all', setTimeFilter, platformFi
 
       const dominant = dominantSentiment;
       let dominantShare = neuShare;
-      let dominantTopic = topNeutralTopic || topPositiveTopic || 'Makan Bergizi Gratis';
+      let dominantTopic = topNeutralTopic || topPositiveTopic || 'Program Makan Bergizi Gratis (MBG)';
       let prevShare = prevPeriodStats.neuShare;
 
       if (dominant === 'positive') {
         dominantShare = posShare;
-        dominantTopic = topPositiveTopic || 'Makan Bergizi Gratis';
+        dominantTopic = topPositiveTopic || 'Program Makan Bergizi Gratis (MBG)';
         prevShare = prevPeriodStats.posShare;
       } else if (dominant === 'negative') {
         dominantShare = negShare;
-        dominantTopic = topNegativeTopic || 'Makan Bergizi Gratis';
+        dominantTopic = topNegativeTopic || 'Program Makan Bergizi Gratis (MBG)';
         prevShare = prevPeriodStats.negShare;
       }
 
@@ -697,7 +724,7 @@ function Overview({ theme, isDark, timeFilter = 'all', setTimeFilter, platformFi
       return {
         dominant,
         dominantShare: dominantShare.toFixed(1),
-        dominantTopic: dayPayload.topPositiveTopic || topPositiveTopic || 'Makan Bergizi Gratis',
+        dominantTopic: dayPayload.topPositiveTopic || topPositiveTopic || 'Program Makan Bergizi Gratis (MBG)',
         diff,
         badgeText: `${diff >= 0 ? '↑' : '↓'} ${Math.abs(diff).toFixed(1)}% vs. avg`,
         badgeBg: dominant === 'positive' ? '#dcfce7' : dominant === 'negative' ? '#fee2e2' : '#e2e8f0',
@@ -708,7 +735,7 @@ function Overview({ theme, isDark, timeFilter = 'all', setTimeFilter, platformFi
     return {
       dominant: dominantSentiment,
       dominantShare: neutralShare,
-      dominantTopic: topNeutralTopic || 'Makan Bergizi Gratis',
+      dominantTopic: topNeutralTopic || 'Program Makan Bergizi Gratis (MBG)',
       diff: 0,
       badgeText: `${neutralShare}% share`,
       badgeBg: '#e2e8f0',
@@ -730,7 +757,7 @@ function Overview({ theme, isDark, timeFilter = 'all', setTimeFilter, platformFi
   // Dynamic banner configuration sesuai instruksi Backend (poin #3)
   const bannerConfig = useMemo(() => {
     const { dominant, dominantShare, dominantTopic, badgeText, badgeBg, badgeColor } = activeDominantStats;
-    const topicLabel = dominantTopic && dominantTopic !== '-' ? dominantTopic : 'Makan Bergizi Gratis';
+    const topicLabel = dominantTopic && dominantTopic !== '-' ? dominantTopic : 'Program Makan Bergizi Gratis (MBG)';
 
     if (dominant === 'negative') {
       return {
@@ -786,7 +813,7 @@ function Overview({ theme, isDark, timeFilter = 'all', setTimeFilter, platformFi
           overviewApiData?.narrativeSummary ||
           (selectedDate
             ? `Percakapan seputar ${topicLabel} cenderung netral pada ${selectedDate} dengan proporsi ${dominantShare}%, didorong oleh diskusi informatif di media sosial.`
-            : `Percakapan seputar ${topicLabel} cenderung netral dan stabil dengan proporsi ${dominantShare}%, didorong oleh diskusi informatif dan berita pemadaman di media sosial.`),
+            : `Percakapan seputar ${topicLabel} cenderung netral dan stabil dengan proporsi ${dominantShare}%, didorong oleh diskusi informatif dan perkembangan terkini di media sosial.`),
         metricLabel: 'Neutral share',
         metricValue: `${dominantShare}%`,
         badgeText,
@@ -838,6 +865,58 @@ function Overview({ theme, isDark, timeFilter = 'all', setTimeFilter, platformFi
       )
     };
   }, [activeDominantStats, overviewApiData, periodLabelEn, selectedDate, timeFilter]);
+
+  // Dynamic Sentiment & Topic Inspector untuk Hover Tooltip & Floating Badge
+  const getDailySentimentInfo = (data: any) => {
+    const fallbackTopic =
+      activeDominantStats.dominantTopic ||
+      overviewApiData?.dominantTopic ||
+      'Program Makan Bergizi Gratis (MBG)';
+
+    if (!data) {
+      return {
+        type: 'neutral',
+        label: 'Sentimen Dominan: Netral',
+        badgeBg: '#f1f5f9',
+        badgeBorder: '#cbd5e1',
+        textColor: '#334155',
+        topic: fallbackTopic
+      };
+    }
+
+    const pos = Number(data.positive || 0);
+    const neu = Number(data.neutral || 0);
+    const neg = Number(data.negative || 0);
+
+    if (pos > neu && pos >= neg) {
+      return {
+        type: 'positive',
+        label: 'Sentimen Dominan: Positif',
+        badgeBg: '#dcfce7',
+        badgeBorder: '#86efac',
+        textColor: '#166534',
+        topic: data.topPositiveTopic || topPositiveTopic || fallbackTopic
+      };
+    } else if (neg > neu && neg > pos) {
+      return {
+        type: 'negative',
+        label: 'Sentimen Dominan: Negatif',
+        badgeBg: '#fee2e2',
+        badgeBorder: '#fca5a5',
+        textColor: '#991b1b',
+        topic: data.topNegativeTopic || topNegativeTopic || fallbackTopic
+      };
+    } else {
+      return {
+        type: 'neutral',
+        label: 'Sentimen Dominan: Netral',
+        badgeBg: '#f1f5f9',
+        badgeBorder: '#cbd5e1',
+        textColor: '#334155',
+        topic: data.topNeutralTopic || data.dominant_topic || topNeutralTopic || fallbackTopic
+      };
+    }
+  };
 
   return (
     <section style={{ display: 'flex', flexDirection: 'column', gap: '20px', opacity: isRefreshing ? 0.6 : 1, transition: 'opacity 0.2s', width: '100%', boxSizing: 'border-box' }}>
@@ -1074,6 +1153,7 @@ function Overview({ theme, isDark, timeFilter = 'all', setTimeFilter, platformFi
         topicsCount={topicsApiData.length}
         entitiesCount={entitiesApiData.length}
         type="overview"
+        timeFilter={timeFilter}
       />
 
       {/* Row 2: Line Chart (2/3) on Left | Key Insight + Platform Distribution Stack (1/3) on Right */}
@@ -1141,29 +1221,32 @@ function Overview({ theme, isDark, timeFilter = 'all', setTimeFilter, platformFi
 
           <div style={{ height: 280, position: 'relative', width: '100%', display: 'flex', justifyContent: 'center', alignItems: 'center' }}>
             {/* Callout Tag on Peak Point - ONLY shown on graph hover */}
-            {hoveredTrendData && (
-              <div style={{
-                position: 'absolute',
-                top: '10px',
-                right: '18%',
-                zIndex: 10,
-                backgroundColor: '#dcfce7',
-                border: '1px solid #86efac',
-                padding: '6px 12px',
-                borderRadius: '8px',
-                fontSize: '11px',
-                fontWeight: '700',
-                color: '#166534',
-                boxShadow: '0 2px 8px rgba(0,0,0,0.08)',
-                pointerEvents: 'none',
-                transition: 'all 0.15s ease'
-              }}>
-                Peak positive sentiment: <br />
-                <strong style={{ fontSize: '13px', display: 'inline-block', marginTop: '2px' }}>
-                  {hoveredTrendData.topPositiveTopic || topPositiveTopic}
-                </strong>
-              </div>
-            )}
+            {hoveredTrendData && (() => {
+              const daySent = getDailySentimentInfo(hoveredTrendData);
+              return (
+                <div style={{
+                  position: 'absolute',
+                  top: '10px',
+                  right: '18%',
+                  zIndex: 10,
+                  backgroundColor: daySent.badgeBg,
+                  border: `1px solid ${daySent.badgeBorder}`,
+                  padding: '6px 12px',
+                  borderRadius: '8px',
+                  fontSize: '11px',
+                  fontWeight: '700',
+                  color: daySent.textColor,
+                  boxShadow: '0 2px 8px rgba(0,0,0,0.08)',
+                  pointerEvents: 'none',
+                  transition: 'all 0.15s ease'
+                }}>
+                  {daySent.label}: <br />
+                  <strong style={{ fontSize: '13px', display: 'inline-block', marginTop: '2px' }}>
+                    {daySent.topic}
+                  </strong>
+                </div>
+              );
+            })()}
 
             <ResponsiveContainer width="100%" height="100%">
               <LineChart
@@ -1189,7 +1272,7 @@ function Overview({ theme, isDark, timeFilter = 'all', setTimeFilter, platformFi
                   content={({ active, payload, label }: any) => {
                     if (active && payload && payload.length) {
                       const data = payload[0].payload;
-                      const peakTopic = data.topPositiveTopic || topPositiveTopic;
+                      const daySent = getDailySentimentInfo(data);
                       return (
                         <div style={{
                           backgroundColor: theme.bgCard,
@@ -1200,17 +1283,17 @@ function Overview({ theme, isDark, timeFilter = 'all', setTimeFilter, platformFi
                           textAlign: 'left'
                         }}>
                           <div style={{
-                            backgroundColor: '#dcfce7',
-                            border: '1px solid #86efac',
+                            backgroundColor: daySent.badgeBg,
+                            border: `1px solid ${daySent.badgeBorder}`,
                             padding: '6px 10px',
                             borderRadius: '8px',
                             marginBottom: '10px',
                             fontSize: '11px',
                             fontWeight: '700',
-                            color: '#166534'
+                            color: daySent.textColor
                           }}>
-                            <div>Peak positive sentiment:</div>
-                            <div style={{ fontSize: '13px', fontWeight: '800', marginTop: '2px' }}>{peakTopic}</div>
+                            <div>{daySent.label}:</div>
+                            <div style={{ fontSize: '13px', fontWeight: '800', marginTop: '2px' }}>{daySent.topic}</div>
                           </div>
                           <div style={{ fontSize: '12px', fontWeight: '800', color: theme.textMain, marginBottom: '6px' }}>{label}</div>
                           {payload.map((entry: any, index: number) => (
@@ -1336,8 +1419,8 @@ function Overview({ theme, isDark, timeFilter = 'all', setTimeFilter, platformFi
                       </h4>
                       <p style={{ margin: 0, fontSize: '12px', color: theme.textMuted, lineHeight: '1.4' }}>
                         {totalPosts > 0
-                          ? <>Puncak tren pada <strong>{peakDateStr !== '-' ? peakDateStr : timeFilterLabel}</strong> dipicu oleh diskusi seputar <strong>{topPositiveTopic}</strong>.</>
-                          : 'Menunggu data percakapan dari database PostgreSQL.'}
+                          ? <>Puncak tren pada <strong>{peakDateStr !== '-' ? peakDateStr : timeFilterLabel}</strong> dipicu oleh diskusi seputar <strong>{activeDominantStats.dominantTopic || topPositiveTopic || 'Program Makan Bergizi Gratis (MBG)'}</strong>.</>
+                          : 'Menunggu data percakapan dari database.'}
                       </p>
                     </div>
                   </div>
@@ -1670,7 +1753,8 @@ function Overview({ theme, isDark, timeFilter = 'all', setTimeFilter, platformFi
                         fontWeight: '700',
                         color: typeBadge.color,
                         backgroundColor: typeBadge.bg,
-                        padding: '3px 8px',
+                        border: `1px solid ${typeBadge.border}`,
+                        padding: '3px 9px',
                         borderRadius: '12px',
                         display: 'inline-flex',
                         alignItems: 'center',

@@ -65,6 +65,9 @@ pnpm-debug.log*
 *.xls
 *.csv
 *.parquet
+*.sqlite
+*.sqlite3
+*.db
 
 # ==========================================
 # DOKUMEN INTERNAL & PROYEK NON-RELEVAN

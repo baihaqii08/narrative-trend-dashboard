@@ -8,9 +8,10 @@ interface SummaryCardsProps {
   topicsCount?: number;
   entitiesCount?: number;
   type?: 'overview' | 'sentiment';
+  timeFilter?: string;
 }
 
-function SummaryCards({ theme, data, overviewStats, topicsCount = 0, entitiesCount = 0, type = 'overview' }: SummaryCardsProps) {
+function SummaryCards({ theme, data, overviewStats, topicsCount = 0, entitiesCount = 0, type = 'overview', timeFilter = 'all' }: SummaryCardsProps) {
   const stats = useMemo(() => {
     const topics = new Set<string>();
     const entities = new Set<string>();
@@ -122,6 +123,10 @@ function SummaryCards({ theme, data, overviewStats, topicsCount = 0, entitiesCou
     );
   }
 
+  const postsGrowth = overviewStats?.postsGrowth;
+  const engagementGrowth = overviewStats?.engagementGrowth;
+  const isAllTime = !timeFilter || timeFilter === 'all';
+
   return (
     <div style={{ display: 'grid', gridTemplateColumns: 'repeat(auto-fit, minmax(230px, 1fr))', gap: '20px' }}>
       
@@ -161,9 +166,25 @@ function SummaryCards({ theme, data, overviewStats, topicsCount = 0, entitiesCou
           <span style={{ fontSize: '26px', fontWeight: '800', color: theme.textMain, margin: '2px 0' }}>
             {formatPosts(stats.totalPosts)}
           </span>
-          <span style={{ fontSize: '13px', fontWeight: '600', color: '#16a34a', display: 'flex', alignItems: 'center', gap: '4px' }}>
-            <span style={{ fontWeight: 'bold' }}>↑ 8.2%</span> vs previous period
-          </span>
+          {postsGrowth !== undefined && postsGrowth !== null ? (
+            <span style={{
+              fontSize: '13px',
+              fontWeight: '600',
+              color: postsGrowth >= 0 ? '#16a34a' : '#dc2626',
+              display: 'flex',
+              alignItems: 'center',
+              gap: '4px'
+            }}>
+              <span style={{ fontWeight: 'bold' }}>
+                {postsGrowth >= 0 ? `↑ +${postsGrowth}%` : `↓ ${Math.abs(postsGrowth)}%`}
+              </span>
+              <span>{isAllTime ? 'vs paruh awal' : 'vs previous period'}</span>
+            </span>
+          ) : (
+            <span style={{ fontSize: '13px', fontWeight: '600', color: '#16a34a', display: 'flex', alignItems: 'center', gap: '4px' }}>
+              <span style={{ fontWeight: 'bold' }}>100%</span> total dataset
+            </span>
+          )}
         </div>
       </div>
 
@@ -204,9 +225,25 @@ function SummaryCards({ theme, data, overviewStats, topicsCount = 0, entitiesCou
           <span style={{ fontSize: '26px', fontWeight: '800', color: theme.textMain, margin: '2px 0' }}>
             {formatEngagement(stats.totalEngagement)}
           </span>
-          <span style={{ fontSize: '13px', fontWeight: '600', color: '#16a34a', display: 'flex', alignItems: 'center', gap: '4px' }}>
-            <span style={{ fontWeight: 'bold' }}>↑ 16,4%</span> vs previous period
-          </span>
+          {engagementGrowth !== undefined && engagementGrowth !== null ? (
+            <span style={{
+              fontSize: '13px',
+              fontWeight: '600',
+              color: engagementGrowth >= 0 ? '#16a34a' : '#dc2626',
+              display: 'flex',
+              alignItems: 'center',
+              gap: '4px'
+            }}>
+              <span style={{ fontWeight: 'bold' }}>
+                {engagementGrowth >= 0 ? `↑ +${engagementGrowth}%` : `↓ ${Math.abs(engagementGrowth)}%`}
+              </span>
+              <span>{isAllTime ? 'vs paruh awal' : 'vs previous period'}</span>
+            </span>
+          ) : (
+            <span style={{ fontSize: '13px', fontWeight: '600', color: '#9333ea', display: 'flex', alignItems: 'center', gap: '4px' }}>
+              <span style={{ fontWeight: 'bold' }}>Total interaksi</span> likes & comments
+            </span>
+          )}
         </div>
       </div>
 
@@ -244,8 +281,8 @@ function SummaryCards({ theme, data, overviewStats, topicsCount = 0, entitiesCou
           <span style={{ fontSize: '26px', fontWeight: '800', color: theme.textMain, margin: '2px 0' }}>
             {stats.activeNarratives}
           </span>
-          <span style={{ fontSize: '13px', fontWeight: '600', color: '#16a34a', display: 'flex', alignItems: 'center', gap: '4px' }}>
-            <span style={{ fontWeight: 'bold' }}>↑ +3</span> new topics
+          <span style={{ fontSize: '13px', fontWeight: '600', color: '#ea580c', display: 'flex', alignItems: 'center', gap: '4px' }}>
+            <span style={{ fontWeight: 'bold' }}>{stats.activeNarratives} topik aktif</span> terverifikasi
           </span>
         </div>
       </div>
@@ -288,8 +325,8 @@ function SummaryCards({ theme, data, overviewStats, topicsCount = 0, entitiesCou
           <span style={{ fontSize: '26px', fontWeight: '800', color: theme.textMain, margin: '2px 0' }}>
             {stats.uniqueEntities}
           </span>
-          <span style={{ fontSize: '13px', fontWeight: '600', color: '#16a34a', display: 'flex', alignItems: 'center', gap: '4px' }}>
-            <span style={{ fontWeight: 'bold' }}>↑ +3</span> new entities
+          <span style={{ fontSize: '13px', fontWeight: '600', color: '#0284c7', display: 'flex', alignItems: 'center', gap: '4px' }}>
+            <span style={{ fontWeight: 'bold' }}>{stats.uniqueEntities} entitas</span> di Knowledge Graph
           </span>
         </div>
       </div>

@@ -20,3 +20,4 @@ echo [SERVER READY] Frontend running at http://localhost:5173
 echo.
 npm run dev
 pause
+

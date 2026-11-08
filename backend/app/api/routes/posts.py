@@ -7,6 +7,7 @@ from datetime import datetime, timedelta
 from app.api.dependencies import get_db
 from models import Post
 from app.api.routes.sentiment import serialize_post
+from app.api.routes.dashboard import normalize_platform_filter
 
 router = APIRouter(tags=["Posts"])
 

@@ -1,20 +1,28 @@
 from fastapi import APIRouter, Depends, Query
 from sqlalchemy.orm import Session
-from sqlalchemy import or_, func, cast, Date
+from sqlalchemy import or_, func
 from typing import Optional, List, Dict, Any
 from datetime import datetime, timedelta
 
 from app.api.dependencies import get_db
-from models import Post
+from models import Post, Topic
 from app.core.cache import in_memory_cache
-from app.api.routes.dashboard import parse_filter_days
+from app.api.routes.dashboard import parse_filter_days, normalize_platform_filter
 
 router = APIRouter(tags=["Sentiment"])
 
 def serialize_post(p: Post) -> Dict[str, Any]:
+    norm_platform = (
+        "x" if p.platform and p.platform.lower() in ["twitter", "x"]
+        else "instagram" if p.platform and p.platform.lower() in ["instagram", "ig"]
+        else (p.platform or "x")
+    )
+    topic_name = getattr(p, "topic", None)
+    topic_str = topic_name.name if topic_name else (f"Topik #{p.topic_id}" if p.topic_id else "")
     return {
         "id": str(p.id),
-        "platform": p.platform,
+        "platform": norm_platform,
+        "original_platform": p.platform,
         "platform_post_id": p.platform_post_id,
         "author_username": p.author_username,
         "username": p.author_username,
@@ -28,6 +36,8 @@ def serialize_post(p: Post) -> Dict[str, Any]:
         "hashtags": p.hashtags or [],
         "sentiment": p.sentiment or "neutral",
         "sentiment_score": p.sentiment_score or 0.0,
+        "topic": topic_str,
+        "topic_id": p.topic_id,
         "posted_at": p.posted_at.isoformat() if p.posted_at else None,
         "created_at": p.created_at.isoformat() if p.created_at else None,
         "date": p.posted_at.strftime("%Y-%m-%d %H:%M:%S") if p.posted_at else None
@@ -53,13 +63,14 @@ def get_sentiment_posts(
         start_date = datetime.utcnow() - timedelta(days=filter_days)
         query = query.filter(Post.posted_at >= start_date)
         
-    if platform and isinstance(platform, str) and platform.lower() != "all":
-        query = query.filter(Post.platform == platform.lower())
+    plat_filter = normalize_platform_filter(platform)
+    if plat_filter:
+        query = query.filter(Post.platform.in_(plat_filter))
 
     if sentiment and isinstance(sentiment, str) and sentiment.lower() != "all":
         query = query.filter(Post.sentiment == sentiment.lower())
         
-    posts = query.order_by(Post.posted_at.desc().nullslast()).offset(skip).limit(limit).all()
+    posts = query.order_by(Post.posted_at.desc()).offset(skip).limit(limit).all()
     serialized = [serialize_post(p) for p in posts]
     return serialized
 
@@ -83,8 +94,9 @@ def get_sentiment_distribution(
         start_date = datetime.utcnow() - timedelta(days=filter_days)
         query = query.filter(Post.posted_at >= start_date)
 
-    if platform and isinstance(platform, str) and platform.lower() != "all":
-        query = query.filter(Post.platform == platform.lower())
+    plat_filter = normalize_platform_filter(platform)
+    if plat_filter:
+        query = query.filter(Post.platform.in_(plat_filter))
 
     counts = query.group_by(Post.sentiment).all()
     dist = {"positive": 0, "neutral": 0, "negative": 0, "unlabeled": 0}
@@ -110,8 +122,9 @@ def get_sentiment_timeline(
     """
     filter_days = parse_filter_days(days, time_filter)
 
+    date_col = func.date(Post.posted_at).label("date")
     query = db.query(
-        cast(Post.posted_at, Date).label("date"),
+        date_col,
         Post.sentiment,
         func.count(Post.id).label("count")
     ).filter(Post.posted_at.isnot(None))
@@ -120,19 +133,56 @@ def get_sentiment_timeline(
         start_date = datetime.utcnow() - timedelta(days=filter_days)
         query = query.filter(Post.posted_at >= start_date)
 
-    if platform and isinstance(platform, str) and platform.lower() != "all":
-        query = query.filter(Post.platform == platform.lower())
+    plat_filter = normalize_platform_filter(platform)
+    if plat_filter:
+        query = query.filter(Post.platform.in_(plat_filter))
 
-    stats = query.group_by(cast(Post.posted_at, Date), Post.sentiment).order_by(cast(Post.posted_at, Date)).all()
+    stats = query.group_by(date_col, Post.sentiment).order_by(date_col).all()
+
+    # Query topik dominan per hari untuk akurasi data tooltip pada Line Chart
+    daily_topics: Dict[str, str] = {}
+    try:
+        t_query = db.query(
+            date_col,
+            Topic.name,
+            func.count(Post.id)
+        ).join(Topic, Post.topic_id == Topic.id)\
+         .filter(Post.posted_at.isnot(None))
+        if filter_days:
+            t_query = t_query.filter(Post.posted_at >= start_date)
+        if plat_filter:
+            t_query = t_query.filter(Post.platform.in_(plat_filter))
+        t_rows = t_query.group_by(date_col, Topic.name).order_by(date_col, func.count(Post.id).desc()).all()
+        for d_v, t_name, _ in t_rows:
+            d_s = str(d_v) if d_v else "unknown"
+            if d_s not in daily_topics:
+                daily_topics[d_s] = t_name
+    except Exception:
+        pass
 
     timeline_dict: Dict[str, Dict[str, Any]] = {}
     for date_val, sent, count in stats:
         d_str = str(date_val) if date_val else "unknown"
         if d_str not in timeline_dict:
-            timeline_dict[d_str] = {"date": d_str, "positive": 0, "neutral": 0, "negative": 0, "total": 0}
+            timeline_dict[d_str] = {
+                "date": d_str,
+                "positive": 0,
+                "neutral": 0,
+                "negative": 0,
+                "total": 0,
+                "dominant_topic": daily_topics.get(d_str, "Program Makan Bergizi Gratis (MBG)"),
+                "topPositiveTopic": daily_topics.get(d_str, "Program Makan Bergizi Gratis (MBG)"),
+                "topNeutralTopic": daily_topics.get(d_str, "Program Makan Bergizi Gratis (MBG)"),
+                "topNegativeTopic": daily_topics.get(d_str, "Program Makan Bergizi Gratis (MBG)")
+            }
         s_key = sent.lower() if sent else "unlabeled"
         if s_key in timeline_dict[d_str]:
             timeline_dict[d_str][s_key] += count
         timeline_dict[d_str]["total"] += count
+        if d_str in daily_topics:
+            timeline_dict[d_str]["dominant_topic"] = daily_topics[d_str]
+            timeline_dict[d_str]["topPositiveTopic"] = daily_topics[d_str]
+            timeline_dict[d_str]["topNeutralTopic"] = daily_topics[d_str]
+            timeline_dict[d_str]["topNegativeTopic"] = daily_topics[d_str]
 
     return list(timeline_dict.values())

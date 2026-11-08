@@ -1,6 +1,6 @@
 from fastapi import APIRouter, Depends, Query
 from sqlalchemy.orm import Session
-from sqlalchemy import func, cast, Date, or_
+from sqlalchemy import func, or_
 from datetime import datetime, timedelta
 from typing import Optional, Any
 
@@ -26,7 +26,7 @@ def parse_filter_days(days: Optional[Any] = None, time_filter: Optional[str] = N
                 if d_int > 0:
                     filter_days = d_int
                 else:
-                    filter_days = None # 0 atau -1 artinya Sepanjang Waktu
+                    filter_days = None
         except (ValueError, TypeError):
             filter_days = None
 
@@ -40,6 +40,22 @@ def parse_filter_days(days: Optional[Any] = None, time_filter: Optional[str] = N
             filter_days = None
 
     return filter_days
+
+def normalize_platform_filter(platform: Optional[str]) -> Optional[list]:
+    """
+    Menormalkan parameter platform agar mencakup variasi database ('x', 'twitter', 'X', 'Twitter', dll).
+    Mencegah query mengembalikan 0 postingan ketika filter bernilai 'x' tetapi kolom database bertuliskan 'twitter'.
+    """
+    if not platform or not isinstance(platform, str):
+        return None
+    p = platform.strip().lower()
+    if p in ["all", "null", "undefined", "none", "*", ""]:
+        return None
+    if p in ["x", "twitter"]:
+        return ["x", "twitter", "X", "Twitter"]
+    if p in ["instagram", "ig"]:
+        return ["instagram", "ig", "Instagram", "IG"]
+    return [platform, platform.lower(), platform.upper(), platform.capitalize()]
 
 @router.get("/overview")
 @in_memory_cache(ttl_seconds=120)
@@ -60,17 +76,19 @@ def get_dashboard_overview(
         start_date = datetime.utcnow() - timedelta(days=filter_days)
         query = query.filter(Post.posted_at >= start_date)
 
-    if platform and isinstance(platform, str) and platform.lower() != "all":
-        query = query.filter(Post.platform == platform.lower())
+    plat_filter = normalize_platform_filter(platform)
+    if plat_filter:
+        query = query.filter(Post.platform.in_(plat_filter))
 
-    # Single-pass aggregation query
     stats = query.with_entities(
         func.count(Post.id).label("total_posts"),
         func.sum(Post.likes).label("total_likes"),
         func.sum(Post.comments).label("total_comments"),
         func.sum(Post.shares).label("total_shares"),
         func.sum(Post.views).label("total_views"),
-        func.count(Post.id).filter(Post.sentiment == 'neutral').label("neutral_count")
+        func.count(Post.id).filter(Post.sentiment == 'neutral').label("neutral_count"),
+        func.count(Post.id).filter(Post.sentiment == 'positive').label("positive_count"),
+        func.count(Post.id).filter(Post.sentiment == 'negative').label("negative_count")
     ).first()
     
     total_posts = (stats.total_posts if stats else 0) or 0
@@ -79,13 +97,107 @@ def get_dashboard_overview(
     total_shares = (stats.total_shares if stats else 0) or 0
     total_views = (stats.total_views if stats else 0) or 0
     neutral_count = (stats.neutral_count if stats else 0) or 0
+    positive_count = (stats.positive_count if stats else 0) or 0
+    negative_count = (stats.negative_count if stats else 0) or 0
     
     total_topics = db.query(func.count(Topic.id)).scalar() or 0
     unique_entities = db.query(func.count(Entity.id)).scalar() or 0
     
     neutral_share = round((neutral_count / total_posts * 100), 1) if total_posts > 0 else 0.0
+    positive_share = round((positive_count / total_posts * 100), 1) if total_posts > 0 else 0.0
+    negative_share = round((negative_count / total_posts * 100), 1) if total_posts > 0 else 0.0
     total_engagement = total_likes + total_comments + total_shares
     
+    # Ambil top topic riil dari DB
+    top_t = db.query(Topic).order_by(Topic.post_count.desc()).first()
+    dominant_topic_name = top_t.name if top_t else "Program Makan Bergizi Gratis (MBG)"
+
+    def get_top_topic_for_sentiment(sent_type: str) -> str:
+        try:
+            row = db.query(Topic.name)\
+                .join(Post, Post.topic_id == Topic.id)\
+                .filter(Post.sentiment == sent_type)\
+                .group_by(Topic.name)\
+                .order_by(func.count(Post.id).desc())\
+                .first()
+            return row[0] if row else dominant_topic_name
+        except Exception:
+            return dominant_topic_name
+
+    top_positive_topic = get_top_topic_for_sentiment("positive")
+    top_neutral_topic = get_top_topic_for_sentiment("neutral")
+    top_negative_topic = get_top_topic_for_sentiment("negative")
+
+    # Hitung pertumbuhan riil vs periode sebelumnya
+    posts_growth = None
+    engagement_growth = None
+    try:
+        if filter_days:
+            prev_start = start_date - timedelta(days=filter_days)
+            prev_q = db.query(
+                func.count(Post.id).label("prev_posts"),
+                func.sum(Post.likes + Post.comments + Post.shares).label("prev_eng")
+            ).filter(Post.posted_at >= prev_start, Post.posted_at < start_date)
+            if plat_filter:
+                prev_q = prev_q.filter(Post.platform.in_(plat_filter))
+            prev_row = prev_q.first()
+            p_posts = (prev_row.prev_posts if prev_row else 0) or 0
+            p_eng = (prev_row.prev_eng if prev_row else 0) or 0
+            if p_posts > 0:
+                posts_growth = round(((total_posts - p_posts) / p_posts) * 100, 1)
+            if p_eng > 0:
+                engagement_growth = round(((total_engagement - p_eng) / p_eng) * 100, 1)
+        else:
+            # Sepanjang waktu: perbandingan tren paruh kedua vs paruh pertama
+            min_p, max_p = db.query(func.min(Post.posted_at), func.max(Post.posted_at)).first()
+            if min_p and max_p and min_p < max_p:
+                mid_p = min_p + (max_p - min_p) / 2
+                prev_q = db.query(
+                    func.count(Post.id).label("prev_posts"),
+                    func.sum(Post.likes + Post.comments + Post.shares).label("prev_eng")
+                ).filter(Post.posted_at < mid_p)
+                if plat_filter:
+                    prev_q = prev_q.filter(Post.platform.in_(plat_filter))
+                prev_row = prev_q.first()
+                p_posts = (prev_row.prev_posts if prev_row else 0) or 0
+                p_eng = (prev_row.prev_eng if prev_row else 0) or 0
+
+                curr_q = db.query(
+                    func.count(Post.id).label("curr_posts"),
+                    func.sum(Post.likes + Post.comments + Post.shares).label("curr_eng")
+                ).filter(Post.posted_at >= mid_p)
+                if plat_filter:
+                    curr_q = curr_q.filter(Post.platform.in_(plat_filter))
+                curr_row = curr_q.first()
+                c_posts = (curr_row.curr_posts if curr_row else 0) or 0
+                c_eng = (curr_row.curr_eng if curr_row else 0) or 0
+
+                if p_posts > 0:
+                    posts_growth = round(((c_posts - p_posts) / p_posts) * 100, 1)
+                if p_eng > 0:
+                    engagement_growth = round(((c_eng - p_eng) / p_eng) * 100, 1)
+    except Exception:
+        pass
+
+    # Platform distribution gabungan riil (Instagram vs X)
+    plat_stats = db.query(Post.platform, func.count(Post.id)).group_by(Post.platform).all()
+    ig_posts = 0
+    x_posts = 0
+    for p_name, p_cnt in plat_stats:
+        p_lower = str(p_name).lower() if p_name else ""
+        if "insta" in p_lower or p_lower == "ig":
+            ig_posts += p_cnt
+        elif "twit" in p_lower or p_lower == "x":
+            x_posts += p_cnt
+
+    total_plat = ig_posts + x_posts
+    ig_pct = round((ig_posts / total_plat * 100)) if total_plat > 0 else 50
+    x_pct = 100 - ig_pct if total_plat > 0 else 50
+    platform_distribution = {
+        "instagram": {"percentage": ig_pct, "posts": ig_posts},
+        "x": {"percentage": x_pct, "posts": x_posts}
+    }
+
     kpi_dict = {
         "total_posts": total_posts,
         "total_topics": total_topics,
@@ -94,7 +206,16 @@ def get_dashboard_overview(
         "unique_entities": unique_entities,
         "total_entities": unique_entities,
         "neutral_share": neutral_share,
-        "dominant_sentiment": "neutral"
+        "positive_share": positive_share,
+        "negative_share": negative_share,
+        "dominant_sentiment": "neutral",
+        "dominant_topic": dominant_topic_name,
+        "top_positive_topic": top_positive_topic,
+        "top_neutral_topic": top_neutral_topic,
+        "top_negative_topic": top_negative_topic,
+        "posts_growth": posts_growth,
+        "engagement_growth": engagement_growth,
+        "platform_distribution": platform_distribution
     }
     
     return {
@@ -106,7 +227,16 @@ def get_dashboard_overview(
         "unique_entities": unique_entities,
         "total_entities": unique_entities,
         "neutral_share": neutral_share,
+        "positive_share": positive_share,
+        "negative_share": negative_share,
         "dominant_sentiment": "neutral",
+        "dominant_topic": dominant_topic_name,
+        "top_positive_topic": top_positive_topic,
+        "top_neutral_topic": top_neutral_topic,
+        "top_negative_topic": top_negative_topic,
+        "posts_growth": posts_growth,
+        "engagement_growth": engagement_growth,
+        "platform_distribution": platform_distribution,
         "breakdown": {
             "likes": total_likes,
             "comments": total_comments,
@@ -125,12 +255,12 @@ def get_dashboard_timeline(
 ):
     """
     Mengambil data jumlah post harian untuk dirender di Line Chart.
-    Dioptimasi menggunakan B-Tree index ix_posts_posted_at.
     """
     filter_days = parse_filter_days(days, time_filter)
 
+    date_col = func.date(Post.posted_at).label("date")
     query = db.query(
-        cast(Post.posted_at, Date).label("date"),
+        date_col,
         func.count(Post.id).label("count")
     ).filter(Post.posted_at.isnot(None))
 
@@ -138,10 +268,11 @@ def get_dashboard_timeline(
         start_date = datetime.utcnow() - timedelta(days=filter_days)
         query = query.filter(Post.posted_at >= start_date)
 
-    if platform and isinstance(platform, str) and platform.lower() != "all":
-        query = query.filter(Post.platform == platform.lower())
+    plat_filter = normalize_platform_filter(platform)
+    if plat_filter:
+        query = query.filter(Post.platform.in_(plat_filter))
 
-    daily_stats = query.group_by(cast(Post.posted_at, Date)).order_by(cast(Post.posted_at, Date)).all()
+    daily_stats = query.group_by(date_col).order_by(date_col).all()
     timeline = [{"date": str(stat.date), "count": stat.count} for stat in daily_stats]
     
     return {
@@ -158,9 +289,6 @@ def get_dashboard_sentiment(
     platform: Optional[str] = None,
     db: Session = Depends(get_db)
 ):
-    """
-    Mengambil distribusi sentimen (positive, neutral, negative) untuk Pie/Donut Chart.
-    """
     filter_days = parse_filter_days(days, time_filter)
 
     query = db.query(
@@ -172,8 +300,9 @@ def get_dashboard_sentiment(
         start_date = datetime.utcnow() - timedelta(days=filter_days)
         query = query.filter(Post.posted_at >= start_date)
 
-    if platform and isinstance(platform, str) and platform.lower() != "all":
-        query = query.filter(Post.platform == platform.lower())
+    plat_filter = normalize_platform_filter(platform)
+    if plat_filter:
+        query = query.filter(Post.platform.in_(plat_filter))
 
     sentiment_counts = query.group_by(Post.sentiment).all()
     
@@ -196,9 +325,6 @@ def get_dashboard_sentiment(
 @router.get("/topics")
 @in_memory_cache(ttl_seconds=120)
 def get_dashboard_topics(limit: int = 10, db: Session = Depends(get_db)):
-    """
-    Mengambil daftar Trending Topics teratas beserta jumlah sebutannya (post count).
-    """
     top_topics = db.query(Topic).order_by(Topic.post_count.desc()).limit(limit).all()
     
     topics_list = [
