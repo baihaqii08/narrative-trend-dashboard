@@ -1,59 +1,72 @@
-import time
-import inspect
 from functools import wraps
-from typing import Callable, Any
-import hashlib
-import json
+import inspect
+import time
+from typing import Any, Callable, Dict, Optional, Tuple
 
-# Dictionary untuk menyimpan cache di RAM server
-_CACHE_STORE = {}
 
-def in_memory_cache(ttl_seconds: int = 120):
-    """
-    Decorator untuk meng-cache hasil response API di dalam memory RAM (Dictionary).
-    Sangat berguna untuk endpoint agregasi (seperti Dashboard) yang memakan waktu query lama.
-    """
-    def decorator(func: Callable):
-        @wraps(func)
-        async def async_wrapper(*args, **kwargs):
-            cache_kwargs = {k: v for k, v in kwargs.items() if k not in ["db", "request", "response"]}
-            serialized_kwargs = json.dumps(cache_kwargs, sort_keys=True, default=str)
-            key_hash = hashlib.md5(serialized_kwargs.encode()).hexdigest()
-            cache_key = f"{func.__name__}:{key_hash}"
-            
-            now = time.time()
-            if cache_key in _CACHE_STORE:
-                cached_data, timestamp = _CACHE_STORE[cache_key]
-                if now - timestamp < ttl_seconds:
-                    return cached_data
-                else:
-                    del _CACHE_STORE[cache_key]
-                    
-            result = await func(*args, **kwargs)
-            _CACHE_STORE[cache_key] = (result, now)
-            return result
+DEFAULT_CACHE_TTL_SECONDS = 120
+_MEMORY_CACHE: Dict[str, Tuple[float, Any]] = {}
 
-        @wraps(func)
-        def sync_wrapper(*args, **kwargs):
-            cache_kwargs = {k: v for k, v in kwargs.items() if k not in ["db", "request", "response"]}
-            serialized_kwargs = json.dumps(cache_kwargs, sort_keys=True, default=str)
-            key_hash = hashlib.md5(serialized_kwargs.encode()).hexdigest()
-            cache_key = f"{func.__name__}:{key_hash}"
-            
-            now = time.time()
-            if cache_key in _CACHE_STORE:
-                cached_data, timestamp = _CACHE_STORE[cache_key]
-                if now - timestamp < ttl_seconds:
-                    return cached_data
-                else:
-                    del _CACHE_STORE[cache_key]
-                    
-            result = func(*args, **kwargs)
-            _CACHE_STORE[cache_key] = (result, now)
-            return result
 
-        if inspect.iscoroutinefunction(func):
+def ttl_cache(ttl_seconds: int = DEFAULT_CACHE_TTL_SECONDS) -> Callable:
+    """Cache endpoint responses in memory for `ttl_seconds` to reduce repeated remote DB round-trips."""
+    def decorator(target_function: Callable) -> Callable:
+        if inspect.iscoroutinefunction(target_function):
+            @wraps(target_function)
+            async def async_wrapper(*args: Any, **kwargs: Any) -> Any:
+                cache_key = _build_cache_key(target_function.__name__, kwargs)
+                cached_hit = _get_valid_cached_entry(cache_key, ttl_seconds)
+                if cached_hit is not None:
+                    return cached_hit
+
+                result = await target_function(*args, **kwargs)
+                _store_cache_entry(cache_key, result)
+                return result
+
             return async_wrapper
+
+        @wraps(target_function)
+        def sync_wrapper(*args: Any, **kwargs: Any) -> Any:
+            cache_key = _build_cache_key(target_function.__name__, kwargs)
+            cached_hit = _get_valid_cached_entry(cache_key, ttl_seconds)
+            if cached_hit is not None:
+                return cached_hit
+
+            result = target_function(*args, **kwargs)
+            _store_cache_entry(cache_key, result)
+            return result
+
         return sync_wrapper
 
     return decorator
+
+
+def clear_cache() -> None:
+    _MEMORY_CACHE.clear()
+
+
+def _build_cache_key(function_name: str, keyword_arguments: Dict[str, Any]) -> str:
+    filtered_arguments = {
+        argument_name: argument_value
+        for argument_name, argument_value in keyword_arguments.items()
+        if argument_name not in ("db", "neo4j_session")
+    }
+    sorted_items = sorted(filtered_arguments.items())
+    return f"{function_name}:{repr(sorted_items)}"
+
+
+def _get_valid_cached_entry(cache_key: str, ttl_seconds: int) -> Optional[Any]:
+    cached_entry = _MEMORY_CACHE.get(cache_key)
+    if cached_entry is None:
+        return None
+
+    cached_timestamp, cached_value = cached_entry
+    is_within_ttl = (time.time() - cached_timestamp) < ttl_seconds
+    if not is_within_ttl:
+        return None
+
+    return cached_value
+
+
+def _store_cache_entry(cache_key: str, value: Any) -> None:
+    _MEMORY_CACHE[cache_key] = (time.time(), value)

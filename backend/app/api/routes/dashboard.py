@@ -1,343 +1,322 @@
+from datetime import timedelta
+from typing import Any, Dict, Optional, Tuple
 from fastapi import APIRouter, Depends, Query
+from sqlalchemy import desc, func
 from sqlalchemy.orm import Session
-from sqlalchemy import func, or_
-from datetime import datetime, timedelta
-from typing import Optional, Any
+from app.api.dependencies import apply_date_filter, apply_platform_filter, parse_filter_days
+from app.api.routes.entities import get_top_entities
+from app.api.routes.sentiment import get_sentiment_distribution
+from app.api.routes.topics import get_topics
+from app.core.cache import ttl_cache
+from app.core.database import SocialPost, get_db, get_neo4j
 
-from app.api.dependencies import get_db
-from models import Post, Topic, Entity
-from app.core.cache import in_memory_cache
 
 router = APIRouter()
 
-def parse_filter_days(days: Optional[Any] = None, time_filter: Optional[str] = None) -> Optional[int]:
-    """
-    Sanitasi pintar untuk parameter hari:
-    Mendukung integer, string angka, -1 (all time), 0 (all time), 'all', 'null', dll.
-    """
-    filter_days = None
-    if days is not None:
-        try:
-            d_val = str(days).strip().lower()
-            if d_val in ["all", "null", "undefined", "none", "sepanjang_waktu", "all_time"]:
-                filter_days = None
-            else:
-                d_int = int(float(d_val))
-                if d_int > 0:
-                    filter_days = d_int
-                else:
-                    filter_days = None
-        except (ValueError, TypeError):
-            filter_days = None
+CACHE_TTL_SECONDS = 120
+PERCENTAGE_MULTIPLIER = 100.0
+HOURS_PER_DAY = 24.0
+SECONDS_PER_HOUR = 3600.0
+DEFAULT_OVERVIEW_DAYS_WINDOW = 30.0
+EXCLUDED_TOPIC_NAMES = ("Outlier / Topik Lainnya", "Unknown", "")
 
-    if not filter_days and time_filter and isinstance(time_filter, str):
-        tf = time_filter.strip().lower()
-        if "7" in tf:
-            filter_days = 7
-        elif "30" in tf:
-            filter_days = 30
-        elif any(w in tf for w in ["all", "sepanjang", "total", "ever"]):
-            filter_days = None
 
-    return filter_days
-
-def normalize_platform_filter(platform: Optional[str]) -> Optional[list]:
-    """
-    Menormalkan parameter platform agar mencakup variasi database ('x', 'twitter', 'X', 'Twitter', dll).
-    Mencegah query mengembalikan 0 postingan ketika filter bernilai 'x' tetapi kolom database bertuliskan 'twitter'.
-    """
-    if not platform or not isinstance(platform, str):
-        return None
-    p = platform.strip().lower()
-    if p in ["all", "null", "undefined", "none", "*", ""]:
-        return None
-    if p in ["x", "twitter"]:
-        return ["x", "twitter", "X", "Twitter"]
-    if p in ["instagram", "ig"]:
-        return ["instagram", "ig", "Instagram", "IG"]
-    return [platform, platform.lower(), platform.upper(), platform.capitalize()]
-
+@router.get("")
+@router.get("/")
 @router.get("/overview")
-@in_memory_cache(ttl_seconds=120)
+@router.get("/stats")
+@router.get("/summary")
+@ttl_cache(ttl_seconds=CACHE_TTL_SECONDS)
 def get_dashboard_overview(
-    days: Optional[Any] = None,
-    time_filter: Optional[str] = None,
-    platform: Optional[str] = None,
-    db: Session = Depends(get_db)
-):
-    """
-    Mengambil data agregasi total untuk ringkasan dashboard (KPI).
-    Dioptimasi ke 1 kueri agregasi tunggal + in-memory cache 120 detik.
-    """
-    query = db.query(Post)
-    filter_days = parse_filter_days(days, time_filter)
+    platform: Optional[str] = Query(None, description="Filter by platform: instagram, x"),
+    days: Optional[str] = Query(None, description="Filter by past N days"),
+    timeframe: Optional[str] = Query(None, description="Alias for days"),
+    db: Session = Depends(get_db),
+    neo4j_session=Depends(get_neo4j),
+) -> Dict[str, Any]:
+    filter_days = parse_filter_days(days, timeframe)
+    filtered_query = _build_filtered_post_query(db, platform, filter_days)
 
-    if filter_days:
-        start_date = datetime.utcnow() - timedelta(days=filter_days)
-        query = query.filter(Post.posted_at >= start_date)
-
-    plat_filter = normalize_platform_filter(platform)
-    if plat_filter:
-        query = query.filter(Post.platform.in_(plat_filter))
-
-    stats = query.with_entities(
-        func.count(Post.id).label("total_posts"),
-        func.sum(Post.likes).label("total_likes"),
-        func.sum(Post.comments).label("total_comments"),
-        func.sum(Post.shares).label("total_shares"),
-        func.sum(Post.views).label("total_views"),
-        func.count(Post.id).filter(Post.sentiment == 'neutral').label("neutral_count"),
-        func.count(Post.id).filter(Post.sentiment == 'positive').label("positive_count"),
-        func.count(Post.id).filter(Post.sentiment == 'negative').label("negative_count")
-    ).first()
-    
-    total_posts = (stats.total_posts if stats else 0) or 0
-    total_likes = (stats.total_likes if stats else 0) or 0
-    total_comments = (stats.total_comments if stats else 0) or 0
-    total_shares = (stats.total_shares if stats else 0) or 0
-    total_views = (stats.total_views if stats else 0) or 0
-    neutral_count = (stats.neutral_count if stats else 0) or 0
-    positive_count = (stats.positive_count if stats else 0) or 0
-    negative_count = (stats.negative_count if stats else 0) or 0
-    
-    total_topics = db.query(func.count(Topic.id)).scalar() or 0
-    unique_entities = db.query(func.count(Entity.id)).scalar() or 0
-    
-    neutral_share = round((neutral_count / total_posts * 100), 1) if total_posts > 0 else 0.0
-    positive_share = round((positive_count / total_posts * 100), 1) if total_posts > 0 else 0.0
-    negative_share = round((negative_count / total_posts * 100), 1) if total_posts > 0 else 0.0
+    aggregate_metrics = _query_post_aggregates(filtered_query)
+    total_posts = int(aggregate_metrics.total_posts or 0)
+    total_likes = int(aggregate_metrics.total_likes or 0)
+    total_comments = int(aggregate_metrics.total_comments or 0)
+    total_shares = int(aggregate_metrics.total_shares or 0)
+    total_views = int(aggregate_metrics.total_views or 0)
     total_engagement = total_likes + total_comments + total_shares
-    
-    # Ambil top topic riil dari DB
-    top_t = db.query(Topic).order_by(Topic.post_count.desc()).first()
-    dominant_topic_name = top_t.name if top_t else "Program Makan Bergizi Gratis (MBG)"
+    average_engagement_rate = round((total_engagement / total_posts), 2) if total_posts > 0 else 0.0
 
-    def get_top_topic_for_sentiment(sent_type: str) -> str:
-        try:
-            row = db.query(Topic.name)\
-                .join(Post, Post.topic_id == Topic.id)\
-                .filter(Post.sentiment == sent_type)\
-                .group_by(Topic.name)\
-                .order_by(func.count(Post.id).desc())\
-                .first()
-            return row[0] if row else dominant_topic_name
-        except Exception:
-            return dominant_topic_name
+    sentiment_summary = get_sentiment_distribution(
+        platform=platform,
+        topic=None,
+        days=days,
+        timeframe=timeframe,
+        db=db,
+    )
+    dominant_sentiment = _resolve_dominant_sentiment_label(sentiment_summary["counts"])
 
-    top_positive_topic = get_top_topic_for_sentiment("positive")
-    top_neutral_topic = get_top_topic_for_sentiment("neutral")
-    top_negative_topic = get_top_topic_for_sentiment("negative")
+    top_positive_topic = _find_top_topic_for_sentiment(filtered_query, "positive", "Program Makan Bergizi Gratis (MBG)")
+    top_negative_topic = _find_top_topic_for_sentiment(filtered_query, "negative", "Evaluasi & Pengawasan MBG")
+    top_neutral_topic = _find_top_topic_for_sentiment(filtered_query, "neutral", "Program Makan Bergizi Gratis (MBG)")
 
-    # Hitung pertumbuhan riil vs periode sebelumnya
-    posts_growth = None
-    engagement_growth = None
-    try:
-        if filter_days:
-            prev_start = start_date - timedelta(days=filter_days)
-            prev_q = db.query(
-                func.count(Post.id).label("prev_posts"),
-                func.sum(Post.likes + Post.comments + Post.shares).label("prev_eng")
-            ).filter(Post.posted_at >= prev_start, Post.posted_at < start_date)
-            if plat_filter:
-                prev_q = prev_q.filter(Post.platform.in_(plat_filter))
-            prev_row = prev_q.first()
-            p_posts = (prev_row.prev_posts if prev_row else 0) or 0
-            p_eng = (prev_row.prev_eng if prev_row else 0) or 0
-            if p_posts > 0:
-                posts_growth = round(((total_posts - p_posts) / p_posts) * 100, 1)
-            if p_eng > 0:
-                engagement_growth = round(((total_engagement - p_eng) / p_eng) * 100, 1)
-        else:
-            # Sepanjang waktu: perbandingan tren paruh kedua vs paruh pertama
-            min_p, max_p = db.query(func.min(Post.posted_at), func.max(Post.posted_at)).first()
-            if min_p and max_p and min_p < max_p:
-                mid_p = min_p + (max_p - min_p) / 2
-                prev_q = db.query(
-                    func.count(Post.id).label("prev_posts"),
-                    func.sum(Post.likes + Post.comments + Post.shares).label("prev_eng")
-                ).filter(Post.posted_at < mid_p)
-                if plat_filter:
-                    prev_q = prev_q.filter(Post.platform.in_(plat_filter))
-                prev_row = prev_q.first()
-                p_posts = (prev_row.prev_posts if prev_row else 0) or 0
-                p_eng = (prev_row.prev_eng if prev_row else 0) or 0
-
-                curr_q = db.query(
-                    func.count(Post.id).label("curr_posts"),
-                    func.sum(Post.likes + Post.comments + Post.shares).label("curr_eng")
-                ).filter(Post.posted_at >= mid_p)
-                if plat_filter:
-                    curr_q = curr_q.filter(Post.platform.in_(plat_filter))
-                curr_row = curr_q.first()
-                c_posts = (curr_row.curr_posts if curr_row else 0) or 0
-                c_eng = (curr_row.curr_eng if curr_row else 0) or 0
-
-                if p_posts > 0:
-                    posts_growth = round(((c_posts - p_posts) / p_posts) * 100, 1)
-                if p_eng > 0:
-                    engagement_growth = round(((c_eng - p_eng) / p_eng) * 100, 1)
-    except Exception:
-        pass
-
-    # Platform distribution gabungan riil (Instagram vs X)
-    plat_stats = db.query(Post.platform, func.count(Post.id)).group_by(Post.platform).all()
-    ig_posts = 0
-    x_posts = 0
-    for p_name, p_cnt in plat_stats:
-        p_lower = str(p_name).lower() if p_name else ""
-        if "insta" in p_lower or p_lower == "ig":
-            ig_posts += p_cnt
-        elif "twit" in p_lower or p_lower == "x":
-            x_posts += p_cnt
-
-    total_plat = ig_posts + x_posts
-    ig_pct = round((ig_posts / total_plat * 100)) if total_plat > 0 else 50
-    x_pct = 100 - ig_pct if total_plat > 0 else 50
-    platform_distribution = {
-        "instagram": {"percentage": ig_pct, "posts": ig_posts},
-        "x": {"percentage": x_pct, "posts": x_posts}
-    }
-
-    kpi_dict = {
-        "total_posts": total_posts,
-        "total_topics": total_topics,
-        "trending_topics": total_topics,
-        "total_engagement": total_engagement,
-        "unique_entities": unique_entities,
-        "total_entities": unique_entities,
-        "neutral_share": neutral_share,
-        "positive_share": positive_share,
-        "negative_share": negative_share,
-        "dominant_sentiment": "neutral",
-        "dominant_topic": dominant_topic_name,
-        "top_positive_topic": top_positive_topic,
-        "top_neutral_topic": top_neutral_topic,
-        "top_negative_topic": top_negative_topic,
-        "posts_growth": posts_growth,
-        "engagement_growth": engagement_growth,
-        "platform_distribution": platform_distribution
-    }
-    
-    return {
-        "kpi": kpi_dict,
-        "total_posts": total_posts,
-        "total_topics": total_topics,
-        "trending_topics": total_topics,
-        "total_engagement": total_engagement,
-        "unique_entities": unique_entities,
-        "total_entities": unique_entities,
-        "neutral_share": neutral_share,
-        "positive_share": positive_share,
-        "negative_share": negative_share,
-        "dominant_sentiment": "neutral",
-        "dominant_topic": dominant_topic_name,
-        "top_positive_topic": top_positive_topic,
-        "top_neutral_topic": top_neutral_topic,
-        "top_negative_topic": top_negative_topic,
-        "posts_growth": posts_growth,
-        "engagement_growth": engagement_growth,
-        "platform_distribution": platform_distribution,
-        "breakdown": {
-            "likes": total_likes,
-            "comments": total_comments,
-            "shares": total_shares,
-            "views": total_views
-        }
-    }
-
-@router.get("/timeline")
-@in_memory_cache(ttl_seconds=120)
-def get_dashboard_timeline(
-    days: Optional[Any] = None,
-    time_filter: Optional[str] = None,
-    platform: Optional[str] = None,
-    db: Session = Depends(get_db)
-):
-    """
-    Mengambil data jumlah post harian untuk dirender di Line Chart.
-    """
-    filter_days = parse_filter_days(days, time_filter)
-
-    date_col = func.date(Post.posted_at).label("date")
-    query = db.query(
-        date_col,
-        func.count(Post.id).label("count")
-    ).filter(Post.posted_at.isnot(None))
-
-    if filter_days:
-        start_date = datetime.utcnow() - timedelta(days=filter_days)
-        query = query.filter(Post.posted_at >= start_date)
-
-    plat_filter = normalize_platform_filter(platform)
-    if plat_filter:
-        query = query.filter(Post.platform.in_(plat_filter))
-
-    daily_stats = query.group_by(date_col).order_by(date_col).all()
-    timeline = [{"date": str(stat.date), "count": stat.count} for stat in daily_stats]
-    
-    return {
-        "days_requested": filter_days or "all",
-        "timeline": timeline,
-        "total_posts": sum(stat.count for stat in daily_stats)
-    }
-
-@router.get("/sentiment")
-@in_memory_cache(ttl_seconds=120)
-def get_dashboard_sentiment(
-    days: Optional[Any] = None,
-    time_filter: Optional[str] = None,
-    platform: Optional[str] = None,
-    db: Session = Depends(get_db)
-):
-    filter_days = parse_filter_days(days, time_filter)
-
-    query = db.query(
-        Post.sentiment,
-        func.count(Post.id).label("count")
+    posts_growth_pct, engagement_growth_pct = _calculate_period_over_period_growth(
+        db=db,
+        platform=platform,
+        filter_days=filter_days,
+        current_posts=total_posts,
+        current_engagement=total_engagement,
     )
 
-    if filter_days:
-        start_date = datetime.utcnow() - timedelta(days=filter_days)
-        query = query.filter(Post.posted_at >= start_date)
+    platform_distribution = _compute_platform_distribution(db, filter_days)
+    top_topics = get_topics(platform=platform, days=days, timeframe=timeframe, limit=100, db=db)
+    top_entities = get_top_entities(
+        limit=200,
+        entity_type=None,
+        type=None,
+        platform=platform,
+        days=days,
+        timeframe=timeframe,
+        db=db,
+        neo4j_session=neo4j_session,
+    )
 
-    plat_filter = normalize_platform_filter(platform)
-    if plat_filter:
-        query = query.filter(Post.platform.in_(plat_filter))
+    active_days = _calculate_active_days(
+        filter_days=filter_days,
+        earliest_date=aggregate_metrics.min_date,
+        latest_date=aggregate_metrics.max_date,
+    )
+    posts_per_hour = round(total_posts / (active_days * HOURS_PER_DAY), 1) if total_posts > 0 else 0.0
 
-    sentiment_counts = query.group_by(Post.sentiment).all()
-    
-    distribution = {
-        "positive": 0,
-        "neutral": 0,
-        "negative": 0,
-        "unlabeled": 0
-    }
-    
-    for stat in sentiment_counts:
-        key = stat.sentiment.lower() if stat.sentiment else "unlabeled"
-        if key in distribution:
-            distribution[key] += stat.count
-        else:
-            distribution["unlabeled"] += stat.count
-            
-    return distribution
-
-@router.get("/topics")
-@in_memory_cache(ttl_seconds=120)
-def get_dashboard_topics(limit: int = 10, db: Session = Depends(get_db)):
-    top_topics = db.query(Topic).order_by(Topic.post_count.desc()).limit(limit).all()
-    
-    topics_list = [
-        {
-            "id": t.id,
-            "name": t.name,
-            "post_count": t.post_count,
-            "keywords": t.keywords
-        }
-        for t in top_topics
-    ]
-    
     return {
-        "limit": limit,
-        "trending_topics": topics_list
+        "total_posts": total_posts,
+        "totalPosts": total_posts,
+        "total_Conversations": total_posts,
+        "totalConversations": total_posts,
+        "posts_growth": posts_growth_pct,
+        "postsGrowth": posts_growth_pct,
+        "total_engagement": total_engagement,
+        "totalEngagement": total_engagement,
+        "engagement_growth": engagement_growth_pct,
+        "engagementGrowth": engagement_growth_pct,
+        "avg_engagement": average_engagement_rate,
+        "avgEngagementRate": f"{average_engagement_rate}%",
+        "posts_per_hour": posts_per_hour,
+        "postsPerHour": str(posts_per_hour),
+        "total_likes": total_likes,
+        "total_comments": total_comments,
+        "total_shares": total_shares,
+        "total_views": total_views,
+        "active_topics": len(top_topics),
+        "trending_topics_count": len(top_topics),
+        "unique_entities": len(top_entities),
+        "dominant_sentiment": dominant_sentiment.capitalize(),
+        "dominantSentiment": dominant_sentiment.capitalize(),
+        "sentiment": sentiment_summary,
+        "sentiment_distribution": sentiment_summary["counts"],
+        "sentiment_percentages": sentiment_summary["percentages"],
+        "top_positive_topic": top_positive_topic,
+        "top_negative_topic": top_negative_topic,
+        "top_neutral_topic": top_neutral_topic,
+        "platform_distribution": platform_distribution["counts"],
+        "platform_percentages": platform_distribution["percentages"],
+        "instagram_share": platform_distribution["percentages"]["instagram"],
+        "x_share": platform_distribution["percentages"]["x"],
+        "top_topics": top_topics[:6],
+        "top_entities": top_entities[:8],
     }
+
+
+def _build_filtered_post_query(
+    db: Session,
+    platform: Optional[str],
+    filter_days: Optional[int],
+):
+    query = db.query(SocialPost)
+    query = apply_platform_filter(query, platform)
+    return apply_date_filter(query, db, filter_days)
+
+
+def _query_post_aggregates(filtered_query):
+    return filtered_query.with_entities(
+        func.count(SocialPost.id).label("total_posts"),
+        func.sum(func.coalesce(SocialPost.likes, 0)).label("total_likes"),
+        func.sum(func.coalesce(SocialPost.comments, 0)).label("total_comments"),
+        func.sum(func.coalesce(SocialPost.shares, 0)).label("total_shares"),
+        func.sum(func.coalesce(SocialPost.views, 0)).label("total_views"),
+        func.min(SocialPost.created_at).label("min_date"),
+        func.max(SocialPost.created_at).label("max_date"),
+    ).first()
+
+
+def _resolve_dominant_sentiment_label(sentiment_counts: Dict[str, int]) -> str:
+    if not any(sentiment_counts.values()):
+        return "neutral"
+    return max(sentiment_counts, key=sentiment_counts.get)
+
+
+def _find_top_topic_for_sentiment(
+    filtered_query,
+    sentiment_label: str,
+    fallback_topic: str,
+) -> str:
+    top_topic_row = (
+        filtered_query.with_entities(
+            SocialPost.topic,
+            func.count(SocialPost.id).label("topic_count"),
+        )
+        .filter(
+            func.lower(SocialPost.sentiment) == sentiment_label.lower(),
+            SocialPost.topic.isnot(None),
+            ~SocialPost.topic.in_(EXCLUDED_TOPIC_NAMES),
+        )
+        .group_by(SocialPost.topic)
+        .order_by(desc("topic_count"))
+        .first()
+    )
+    return top_topic_row.topic if top_topic_row and top_topic_row.topic else fallback_topic
+
+
+def _calculate_period_over_period_growth(
+    db: Session,
+    platform: Optional[str],
+    filter_days: Optional[int],
+    current_posts: int,
+    current_engagement: int,
+) -> Tuple[float, float]:
+    try:
+        if filter_days and filter_days > 0:
+            return _calculate_windowed_growth(
+                db=db,
+                platform=platform,
+                filter_days=filter_days,
+                current_posts=current_posts,
+                current_engagement=current_engagement,
+            )
+        return _calculate_all_time_split_growth(db=db, platform=platform)
+    except Exception:
+        return 0.0, 0.0
+
+
+def _calculate_windowed_growth(
+    db: Session,
+    platform: Optional[str],
+    filter_days: int,
+    current_posts: int,
+    current_engagement: int,
+) -> Tuple[float, float]:
+    latest_date = db.query(func.max(SocialPost.created_at)).scalar()
+    if not latest_date:
+        return 0.0, 0.0
+
+    current_period_start = latest_date - timedelta(days=filter_days)
+    previous_period_start = current_period_start - timedelta(days=filter_days)
+
+    previous_query = apply_platform_filter(db.query(SocialPost), platform).filter(
+        SocialPost.created_at >= previous_period_start,
+        SocialPost.created_at < current_period_start,
+    )
+    previous_posts, previous_engagement = _query_post_and_engagement_totals(previous_query)
+
+    posts_growth = _compute_growth_percentage(current_posts, previous_posts)
+    engagement_growth = _compute_growth_percentage(current_engagement, previous_engagement)
+    return posts_growth, engagement_growth
+
+
+def _calculate_all_time_split_growth(
+    db: Session,
+    platform: Optional[str],
+) -> Tuple[float, float]:
+    date_bounds = db.query(
+        func.min(SocialPost.created_at),
+        func.max(SocialPost.created_at),
+    ).first()
+    if not date_bounds or not date_bounds[0] or not date_bounds[1]:
+        return 0.0, 0.0
+
+    earliest_date, latest_date = date_bounds[0], date_bounds[1]
+    midpoint_date = earliest_date + (latest_date - earliest_date) / 2
+
+    previous_half_query = apply_platform_filter(db.query(SocialPost), platform).filter(
+        SocialPost.created_at < midpoint_date
+    )
+    current_half_query = apply_platform_filter(db.query(SocialPost), platform).filter(
+        SocialPost.created_at >= midpoint_date
+    )
+
+    previous_posts, previous_engagement = _query_post_and_engagement_totals(previous_half_query)
+    current_posts, current_engagement = _query_post_and_engagement_totals(current_half_query)
+
+    posts_growth = _compute_growth_percentage(current_posts, previous_posts)
+    engagement_growth = _compute_growth_percentage(current_engagement, previous_engagement)
+    return posts_growth, engagement_growth
+
+
+def _query_post_and_engagement_totals(query) -> Tuple[int, int]:
+    engagement_expression = (
+        func.coalesce(SocialPost.likes, 0)
+        + func.coalesce(SocialPost.comments, 0)
+        + func.coalesce(SocialPost.shares, 0)
+    )
+    totals = query.with_entities(
+        func.count(SocialPost.id).label("post_count"),
+        func.sum(engagement_expression).label("engagement_sum"),
+    ).first()
+    post_count = int(totals.post_count or 0) if totals else 0
+    engagement_sum = int(totals.engagement_sum or 0) if totals else 0
+    return post_count, engagement_sum
+
+
+def _compute_growth_percentage(current_value: int, previous_value: int) -> float:
+    if previous_value <= 0:
+        return 0.0
+    return round(((current_value - previous_value) / previous_value) * PERCENTAGE_MULTIPLIER, 1)
+
+
+def _compute_platform_distribution(
+    db: Session,
+    filter_days: Optional[int],
+) -> Dict[str, Dict[str, Any]]:
+    platform_query = apply_date_filter(db.query(SocialPost), db, filter_days)
+    platform_rows = (
+        platform_query.with_entities(
+            func.lower(SocialPost.platform).label("platform"),
+            func.count(SocialPost.id).label("post_count"),
+        )
+        .group_by(func.lower(SocialPost.platform))
+        .all()
+    )
+
+    platform_counts = {"instagram": 0, "x": 0}
+    for platform_name, post_count in platform_rows:
+        normalized_platform = (platform_name or "").lower()
+        count_int = int(post_count or 0)
+        if "insta" in normalized_platform or normalized_platform == "ig":
+            platform_counts["instagram"] += count_int
+        elif normalized_platform in ("x", "twitter", "tw"):
+            platform_counts["x"] += count_int
+
+    total_platform_posts = platform_counts["instagram"] + platform_counts["x"]
+    divisor = total_platform_posts if total_platform_posts > 0 else 1
+    instagram_percentage = round((platform_counts["instagram"] / divisor) * PERCENTAGE_MULTIPLIER)
+    x_percentage = round((platform_counts["x"] / divisor) * PERCENTAGE_MULTIPLIER)
+
+    return {
+        "counts": platform_counts,
+        "percentages": {
+            "instagram": instagram_percentage,
+            "x": x_percentage,
+        },
+    }
+
+
+def _calculate_active_days(
+    filter_days: Optional[int],
+    earliest_date: Any,
+    latest_date: Any,
+) -> float:
+    if filter_days and filter_days > 0:
+        return float(filter_days)
+    if earliest_date and latest_date:
+        elapsed_days = (latest_date - earliest_date).total_seconds() / (HOURS_PER_DAY * SECONDS_PER_HOUR)
+        return max(1.0, elapsed_days)
+    return DEFAULT_OVERVIEW_DAYS_WINDOW

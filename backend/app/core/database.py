@@ -1,63 +1,96 @@
-import os
-from sqlalchemy import create_engine
-from sqlalchemy.orm import sessionmaker
+from datetime import datetime
+from typing import Generator, Optional
+from neo4j import Driver, GraphDatabase
+from sqlalchemy import Boolean, Column, DateTime, Integer, String, Text, create_engine
+from sqlalchemy.orm import DeclarativeBase, Session, sessionmaker
 from app.core.config import settings
 
-# Database Engine Initialization
-db_url = settings.DATABASE_URL
-connect_args = {}
 
-if "sqlite" in db_url.lower():
-    connect_args = {"check_same_thread": False}
-    engine = create_engine(db_url, connect_args=connect_args)
-else:
-    try:
-        engine = create_engine(db_url, pool_pre_ping=True)
-        with engine.connect() as conn:
-            pass
-    except Exception:
-        backend_dir = os.path.dirname(os.path.dirname(os.path.dirname(os.path.abspath(__file__))))
-        sqlite_path = os.path.join(backend_dir, "narrative_db.sqlite")
-        db_url = f"sqlite:///{sqlite_path}"
-        connect_args = {"check_same_thread": False}
-        engine = create_engine(db_url, connect_args=connect_args)
-        print(f"[DATABASE] Menggunakan SQLite lokal: {sqlite_path}")
+NEO4J_CONNECTION_TIMEOUT_SECONDS = 6
+NEO4J_ACQUISITION_TIMEOUT_SECONDS = 6
 
+
+class Base(DeclarativeBase):
+    pass
+
+
+class User(Base):
+    __tablename__ = "users"
+
+    id = Column(Integer, primary_key=True, index=True)
+    username = Column(String, unique=True, index=True, nullable=True)
+    email = Column(String, unique=True, index=True, nullable=True)
+    full_name = Column(String, nullable=True)
+    hashed_password = Column(String, nullable=False)
+    is_active = Column(Boolean, default=True)
+
+
+class SocialPost(Base):
+    __tablename__ = "posts"
+
+    id = Column(String, primary_key=True, index=True)
+    platform = Column(String, index=True)
+    author = Column(String, index=True)
+    text_content = Column("content", Text)
+    cleaned_content = Column(Text, nullable=True)
+    created_at = Column(DateTime, default=datetime.utcnow, index=True)
+    likes = Column(Integer, default=0)
+    comments = Column(Integer, default=0)
+    shares = Column(Integer, default=0)
+    views = Column(Integer, default=0)
+    url = Column(String, nullable=True)
+    sentiment = Column(String, index=True)
+    topic = Column(String, index=True)
+    entities = Column(Text, nullable=True)
+
+
+engine = create_engine(settings.sync_database_url, pool_pre_ping=True)
 SessionLocal = sessionmaker(autocommit=False, autoflush=False, bind=engine)
 
-# Neo4J Driver Initialization for Port 7687
-neo4j_driver = None
-neo4j_uris = [
-    settings.NEO4J_URI,
-    "bolt://100.91.60.119:7687",
-    "bolt://localhost:7687"
-]
 
-# Singkirkan duplikat URI
-seen_uris = set()
-candidate_uris = []
-for u in neo4j_uris:
-    if u and u not in seen_uris:
-        seen_uris.add(u)
-        candidate_uris.append(u)
+def get_db() -> Generator[Session, None, None]:
+    database_session = SessionLocal()
+    try:
+        yield database_session
+    finally:
+        database_session.close()
 
-def get_neo4j_driver():
-    global neo4j_driver
-    if neo4j_driver is not None:
-        return neo4j_driver
-    for uri in candidate_uris:
-        try:
-            from neo4j import GraphDatabase
-            auth = (settings.NEO4J_USER, settings.NEO4J_PASSWORD) if settings.NEO4J_PASSWORD else None
-            candidate_driver = GraphDatabase.driver(uri, auth=auth, connection_timeout=6)
-            candidate_driver.verify_connectivity()
-            neo4j_driver = candidate_driver
-            print(f"[NEO4J] Berhasil terhubung ke Neo4j Knowledge Graph di: {uri}")
-            return neo4j_driver
-        except Exception:
-            pass
-    return None
 
-get_neo4j_driver()
-if not neo4j_driver:
-    print("[NEO4J] Port 7687 belum aktif atau tidak dapat dijangkau. Knowledge Graph akan menggunakan data fallback.")
+class Neo4jConnection:
+    def __init__(self) -> None:
+        self.driver: Optional[Driver] = _initialize_neo4j_driver()
+
+    def close(self) -> None:
+        if self.driver is not None:
+            self.driver.close()
+
+    def get_session(self):
+        if self.driver is not None:
+            return self.driver.session()
+        return None
+
+
+def _initialize_neo4j_driver() -> Optional[Driver]:
+    try:
+        return GraphDatabase.driver(
+            settings.NEO4J_URI,
+            auth=(settings.NEO4J_USER, settings.NEO4J_PASSWORD),
+            connection_timeout=NEO4J_CONNECTION_TIMEOUT_SECONDS,
+            connection_acquisition_timeout=NEO4J_ACQUISITION_TIMEOUT_SECONDS,
+            max_transaction_retry_time=2,
+        )
+    except Exception as connection_error:
+        print(f"Failed to create Neo4j driver: {connection_error}")
+        return None
+
+
+neo4j_conn = Neo4jConnection()
+
+
+def get_neo4j():
+    neo4j_session = neo4j_conn.get_session()
+    try:
+        yield neo4j_session
+    finally:
+        if neo4j_session is not None:
+            neo4j_session.close()

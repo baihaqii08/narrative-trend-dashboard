@@ -1,24 +1,22 @@
-// @ts-nocheck
-import React, { useState, useMemo, useEffect, useRef } from 'react';
+import React, { useEffect, useMemo, useRef, useState } from 'react';
 import cytoscape from 'cytoscape';
 import {
   buildMbgFallbackGraph,
   fetchKnowledgeGraphFromApi,
   fetchPostsFromApi,
-  normalizeEntityType,
-  SocialPost
+  SocialPost,
 } from '../../services/api';
 
 export const ENTITY_COLORS: Record<string, string> = {
-  topic: '#f97316',        // Orange (Topic MBG)
-  person: '#8b5cf6',       // Ungu (PER - 19 entitas)
-  organization: '#3b82f6', // Biru (ORG - 12 entitas)
-  geopolitical: '#06b6d4', // Cyan (GPE - 26 entitas)
-  location: '#10b981',     // Hijau Emerald (LOC - 5 entitas)
-  product: '#eab308',      // Kuning Amber (PRD - 23 entitas)
-  event: '#ec4899',        // Pink (EVT - 10 entitas)
-  norm: '#ef4444',         // Merah (NOR - 33 entitas)
-  facility: '#14b8a6'      // Teal (FAC - 0 entitas saat ini)
+  topic: '#f97316',
+  person: '#8b5cf6',
+  organization: '#3b82f6',
+  geopolitical: '#06b6d4',
+  location: '#10b981',
+  product: '#eab308',
+  event: '#ec4899',
+  norm: '#ef4444',
+  facility: '#14b8a6',
 };
 
 export const ENTITY_CATEGORIES = [
@@ -31,10 +29,22 @@ export const ENTITY_CATEGORIES = [
   { id: 'event', label: 'Event (Kegiatan)' },
   { id: 'norm', label: 'Norm (Aturan & Afiliasi)' },
   { id: 'facility', label: 'Facility (Fasilitas)' },
-  { id: 'topic', label: 'Topic (Topik Utama)' }
+  { id: 'topic', label: 'Topic (Topik Utama)' },
 ];
 
-interface KnowledgeGraphProps {
+const ENTITY_LEGEND_ITEMS = [
+  { key: 'topic', label: 'Topic (9)' },
+  { key: 'person', label: 'Person (19)' },
+  { key: 'organization', label: 'Organization (12)' },
+  { key: 'geopolitical', label: 'Geopolitical (26)' },
+  { key: 'location', label: 'Location (5)' },
+  { key: 'product', label: 'Product (23)' },
+  { key: 'event', label: 'Event (10)' },
+  { key: 'norm', label: 'Norm (33)' },
+  { key: 'facility', label: 'Facility (0)' },
+];
+
+export interface KnowledgeGraphProps {
   theme: any;
   isDark?: boolean;
   timeFilter?: string;
@@ -45,6 +55,18 @@ interface KnowledgeGraphProps {
   postsData?: SocialPost[];
 }
 
+interface CytoscapeGraphElements {
+  nodes: any[];
+  edges: any[];
+}
+
+interface GraphStatsSummary {
+  nodesCount: number;
+  edgesCount: number;
+  belongsToEdgeCount: number;
+  coOccursEdgeCount: number;
+}
+
 function KnowledgeGraph({
   theme,
   isDark,
@@ -53,23 +75,19 @@ function KnowledgeGraph({
   isRefreshing,
   embedded = false,
   selectedTopic = null,
-  postsData
+  postsData,
 }: KnowledgeGraphProps) {
   const containerRef = useRef<HTMLDivElement>(null);
-  const cyRef = useRef<any>(null);
+  const cytoscapeInstanceRef = useRef<any>(null);
 
-  // Filters
-  const [entityType, setEntityType] = useState('All');
-  const [edgeFilter, setEdgeFilter] = useState<'All' | 'CO_OCCURS_WITH' | 'BELONGS_TO_TOPIC'>('All');
-  const [minFreq, setMinFreq] = useState('0');
+  const [entityTypeFilter, setEntityTypeFilter] = useState('All');
+  const [edgeTypeFilter, setEdgeTypeFilter] = useState<'All' | 'CO_OCCURS_WITH' | 'BELONGS_TO_TOPIC'>('All');
+  const [minFrequencyFilter, setMinFrequencyFilter] = useState('0');
   const [showEdgeLabels, setShowEdgeLabels] = useState(false);
-
-  // Selected / Hovered Node or Edge Inspector
   const [inspectedItem, setInspectedItem] = useState<any | null>(null);
 
-  // State data dari FastAPI / Neo4j (diinisialisasi langsung dengan dataset MBG resmi)
   const [socialDataRaw, setSocialDataRaw] = useState<SocialPost[]>(postsData || []);
-  const [apiGraphElements, setApiGraphElements] = useState<{ nodes: any[]; edges: any[] } | null>(() =>
+  const [apiGraphElements, setApiGraphElements] = useState<CytoscapeGraphElements | null>(() =>
     buildMbgFallbackGraph()
   );
 
@@ -82,15 +100,14 @@ function KnowledgeGraph({
   useEffect(() => {
     let isMounted = true;
 
-    // Ambil seluruh graph dari `/api/graph/data` dan lakukan pemfilteran interaktif di sisi klien agar relasi antar-node tetap utuh
     fetchKnowledgeGraphFromApi({
       platform: platformFilter,
       timeFilter,
-      minFreq: 0
+      minFreq: 0,
     })
-      .then((res) => {
-        if (isMounted && res && res.nodes.length > 0) {
-          setApiGraphElements(res);
+      .then((graphResult) => {
+        if (isMounted && graphResult && graphResult.nodes.length > 0) {
+          setApiGraphElements(graphResult);
         }
       })
       .catch(() => {
@@ -101,10 +118,14 @@ function KnowledgeGraph({
 
     if (!postsData) {
       fetchPostsFromApi({ platform: platformFilter, timeFilter })
-        .then((posts) => {
-          if (isMounted) setSocialDataRaw(posts);
+        .then((fetchedPosts) => {
+          if (isMounted) {
+            setSocialDataRaw(fetchedPosts);
+          }
         })
-        .catch(() => {});
+        .catch(() => {
+          // Ignore background post fetch errors when rendering graph
+        });
     }
 
     return () => {
@@ -112,130 +133,17 @@ function KnowledgeGraph({
     };
   }, [timeFilter, platformFilter, isRefreshing, postsData]);
 
-  const { graphData, statsSummary } = useMemo(() => {
-    const baseGraph =
-      apiGraphElements && apiGraphElements.nodes.length > 0
-        ? apiGraphElements
-        : buildMbgFallbackGraph();
-
-    let allNodes = [...baseGraph.nodes];
-    let allEdges = [...baseGraph.edges];
-
-    // 1. Filter berdasarkan frekuensi mention_count
-    const freqThreshold = parseInt(minFreq, 10);
-    if (!isNaN(freqThreshold) && freqThreshold > 0) {
-      allNodes = allNodes.filter((n: any) => {
-        if (n.data?.type === 'topic') return true;
-        return Number(n.data?.weight || 0) >= freqThreshold;
-      });
-    }
-
-    // 2. Filter berdasarkan kategori tipe entitas (tetap sertakan tetangga CO_OCCURS_WITH & Topic agar relasi node terlihat)
-    if (entityType !== 'All') {
-      const targetType = entityType.toLowerCase();
-      if (targetType === 'topic') {
-        // Jika memilih Topic, tampilkan semua topic beserta entitas yang memiliki BELONGS_TO_TOPIC
-        const topicIds = new Set(
-          allNodes.filter((n: any) => n.data?.type === 'topic').map((n: any) => String(n.data.id))
-        );
-        const connectedEntityIds = new Set<string>();
-        allEdges.forEach((e: any) => {
-          if (e.data?.type === 'BELONGS_TO_TOPIC') {
-            if (topicIds.has(String(e.data.target))) connectedEntityIds.add(String(e.data.source));
-            if (topicIds.has(String(e.data.source))) connectedEntityIds.add(String(e.data.target));
-          }
-        });
-        allNodes = allNodes.filter(
-          (n: any) => topicIds.has(String(n.data.id)) || connectedEntityIds.has(String(n.data.id))
-        );
-      } else {
-        const primaryIds = new Set(
-          allNodes
-            .filter((n: any) => String(n.data?.type || '').toLowerCase() === targetType)
-            .map((n: any) => String(n.data.id))
-        );
-        const neighborIds = new Set<string>();
-        allEdges.forEach((e: any) => {
-          const s = String(e.data.source);
-          const t = String(e.data.target);
-          if (primaryIds.has(s)) neighborIds.add(t);
-          if (primaryIds.has(t)) neighborIds.add(s);
-        });
-        allNodes = allNodes.filter(
-          (n: any) => primaryIds.has(String(n.data.id)) || neighborIds.has(String(n.data.id))
-        );
-      }
-    }
-
-    // 3. Filter berdasarkan topik terpilih jika ada
-    if (selectedTopic) {
-      const cleanSelTopic = selectedTopic.toLowerCase();
-      const connectedIds = new Set<string>();
-
-      allNodes.forEach((n: any) => {
-        const label = String(n.data?.label || '').toLowerCase();
-        if (n.data?.type === 'topic' && label.includes(cleanSelTopic)) {
-          connectedIds.add(String(n.data.id));
-        }
-      });
-
-      // Tambahkan entitas yang BELONGS_TO_TOPIC ke topik ini
-      allEdges.forEach((e: any) => {
-        if (connectedIds.has(String(e.data.target))) {
-          connectedIds.add(String(e.data.source));
-        }
-        if (connectedIds.has(String(e.data.source))) {
-          connectedIds.add(String(e.data.target));
-        }
-      });
-
-      // Tambahkan juga tetangga CO_OCCURS_WITH dari entitas-entitas di topik tersebut
-      allEdges.forEach((e: any) => {
-        if (e.data?.type === 'CO_OCCURS_WITH') {
-          if (connectedIds.has(String(e.data.source))) connectedIds.add(String(e.data.target));
-          if (connectedIds.has(String(e.data.target))) connectedIds.add(String(e.data.source));
-        }
-      });
-
-      if (connectedIds.size > 0) {
-        allNodes = allNodes.filter((n: any) => connectedIds.has(String(n.data.id)));
-      }
-    }
-
-    // 4. Filter berdasarkan tipe edge (All, CO_OCCURS_WITH, BELONGS_TO_TOPIC)
-    const validNodeIds = new Set(allNodes.map((n: any) => String(n.data.id)));
-    let filteredEdges = allEdges.filter(
-      (e: any) => validNodeIds.has(String(e.data.source)) && validNodeIds.has(String(e.data.target))
-    );
-
-    if (edgeFilter !== 'All') {
-      filteredEdges = filteredEdges.filter((e: any) => e.data?.type === edgeFilter);
-      // Jika hanya menampilkan CO_OCCURS_WITH, sembunyikan node topic agar fokus pada relasi antar-entitas
-      if (edgeFilter === 'CO_OCCURS_WITH') {
-        const coNodeIds = new Set<string>();
-        filteredEdges.forEach((e: any) => {
-          coNodeIds.add(String(e.data.source));
-          coNodeIds.add(String(e.data.target));
-        });
-        allNodes = allNodes.filter(
-          (n: any) => n.data?.type !== 'topic' && (coNodeIds.size === 0 || coNodeIds.has(String(n.data.id)))
-        );
-      }
-    }
-
-    const btCount = filteredEdges.filter((e: any) => e.data?.type === 'BELONGS_TO_TOPIC').length;
-    const coCount = filteredEdges.filter((e: any) => e.data?.type === 'CO_OCCURS_WITH').length;
-
-    return {
-      graphData: { nodes: allNodes, edges: filteredEdges },
-      statsSummary: {
-        nodesCount: allNodes.length,
-        edgesCount: filteredEdges.length,
-        btCount,
-        coCount
-      }
-    };
-  }, [apiGraphElements, socialDataRaw, entityType, edgeFilter, minFreq, selectedTopic]);
+  const { graphData, statsSummary } = useMemo(
+    () =>
+      filterCytoscapeGraph({
+        apiGraphElements,
+        minFrequencyFilter,
+        entityTypeFilter,
+        selectedTopic,
+        edgeTypeFilter,
+      }),
+    [apiGraphElements, socialDataRaw, entityTypeFilter, edgeTypeFilter, minFrequencyFilter, selectedTopic]
+  );
 
   useEffect(() => {
     let resizeObserver: ResizeObserver | null = null;
@@ -244,196 +152,32 @@ function KnowledgeGraph({
       const cy = cytoscape({
         container: containerRef.current,
         elements: graphData,
-        style: [
-          {
-            selector: 'node',
-            style: {
-              'label': 'data(label)',
-              'text-valign': 'bottom',
-              'text-margin-y': 4,
-              'color': theme.textMain,
-              'font-weight': 'bold',
-              'font-size': embedded ? '10px' : '11px',
-              'text-background-color': isDark ? '#0f172a' : '#ffffff',
-              'text-background-opacity': 0.75,
-              'text-background-padding': '2px',
-              'text-background-shape': 'roundrectangle',
-              'background-color': (ele) => {
-                const t = String(ele.data('type') || '').toLowerCase();
-                return ENTITY_COLORS[t] || '#8b5cf6';
-              },
-              'width': (ele) => {
-                const t = String(ele.data('type') || '').toLowerCase();
-                if (t === 'topic') return embedded ? 36 : 46;
-                const w = Number(ele.data('weight') || 1);
-                return Math.max(
-                  embedded ? 18 : 22,
-                  Math.min(embedded ? 40 : 54, 16 + Math.log(Math.max(1, w)) * (embedded ? 4 : 5.5))
-                );
-              },
-              'height': (ele) => {
-                const t = String(ele.data('type') || '').toLowerCase();
-                if (t === 'topic') return embedded ? 36 : 46;
-                const w = Number(ele.data('weight') || 1);
-                return Math.max(
-                  embedded ? 18 : 22,
-                  Math.min(embedded ? 40 : 54, 16 + Math.log(Math.max(1, w)) * (embedded ? 4 : 5.5))
-                );
-              },
-              'border-width': (ele) => (ele.data('type') === 'topic' ? 3 : 2),
-              'border-color': (ele) => (ele.data('type') === 'topic' ? '#ffedd5' : '#ffffff')
-            }
-          },
-          {
-            // Tipe Edge 1: BELONGS_TO_TOPIC (:Entity)-[:BELONGS_TO_TOPIC]->(:Topic)
-            selector: 'edge[type = "BELONGS_TO_TOPIC"]',
-            style: {
-              'width': 1.5,
-              'line-style': 'dashed',
-              'line-dash-pattern': [6, 4],
-              'line-color': isDark ? '#64748b' : '#94a3b8',
-              'target-arrow-shape': 'triangle',
-              'target-arrow-color': isDark ? '#64748b' : '#94a3b8',
-              'arrow-scale': 0.8,
-              'curve-style': 'bezier',
-              'opacity': 0.65,
-              'label': showEdgeLabels ? 'BELONGS_TO_TOPIC' : '',
-              'font-size': '8px',
-              'color': isDark ? '#cbd5e1' : '#475569',
-              'text-rotation': 'autorotate',
-              'text-background-color': isDark ? '#0f172a' : '#ffffff',
-              'text-background-opacity': 0.8,
-              'text-background-padding': '1px'
-            }
-          },
-          {
-            // Tipe Edge 2: CO_OCCURS_WITH (:Entity)-[:CO_OCCURS_WITH]-(:Entity)
-            selector: 'edge[type = "CO_OCCURS_WITH"]',
-            style: {
-              'width': (ele) => {
-                const npmi = Number(ele.data('npmi') ?? ele.data('weight') ?? 0.5);
-                return Math.max(2, Math.min(embedded ? 4.5 : 6, npmi * 5));
-              },
-              'line-style': 'solid',
-              'line-color': isDark ? '#38bdf8' : '#0284c7',
-              'curve-style': 'bezier',
-              'opacity': 0.85,
-              'label': (ele) => (showEdgeLabels ? ele.data('label') || 'CO_OCCURS_WITH' : ''),
-              'font-size': '9px',
-              'font-weight': 'bold',
-              'color': isDark ? '#38bdf8' : '#0369a1',
-              'text-rotation': 'autorotate',
-              'text-background-color': isDark ? '#0f172a' : '#ffffff',
-              'text-background-opacity': 0.85,
-              'text-background-padding': '2px'
-            }
-          },
-          {
-            // Highlight saat node/edge diklik atau di-hover
-            selector: 'node.highlighted',
-            style: {
-              'border-width': 4,
-              'border-color': '#facc15',
-              'z-index': 999
-            }
-          },
-          {
-            selector: 'edge.highlighted',
-            style: {
-              'width': 3.5,
-              'opacity': 1,
-              'line-color': (ele) =>
-                ele.data('type') === 'BELONGS_TO_TOPIC' ? '#f97316' : '#2563eb',
-              'target-arrow-color': '#f97316',
-              'label': (ele) =>
-                ele.data('type') === 'BELONGS_TO_TOPIC'
-                  ? 'BELONGS_TO_TOPIC'
-                  : `CO_OCCURS_WITH (${ele.data('label') || ''})`,
-              'font-size': '9px',
-              'font-weight': 'bold',
-              'color': isDark ? '#f8fafc' : '#0f172a',
-              'text-background-color': isDark ? '#1e293b' : '#fef9c3',
-              'text-background-opacity': 0.95,
-              'text-background-padding': '2px',
-              'z-index': 999
-            }
-          },
-          {
-            selector: '.dimmed',
-            style: {
-              'opacity': 0.2
-            }
-          }
-        ],
+        style: buildCytoscapeStylesheet({ theme, isDark, embedded, showEdgeLabels }),
         layout: {
           name: 'cose',
           padding: embedded ? 20 : 30,
           nodeRepulsion: embedded ? 3200 : 4800,
           idealEdgeLength: embedded ? 75 : 105,
-          animate: false
-        }
+          animate: false,
+        } as any,
       });
 
-      cyRef.current = cy;
+      cytoscapeInstanceRef.current = cy;
 
-      // Interaksi Klik / Hover Node untuk menampilkan seluruh relasi BELONGS_TO_TOPIC & CO_OCCURS_WITH
-      const inspectNode = (node: any) => {
-        cy.elements().removeClass('highlighted dimmed');
-        const neighborhood = node.closedNeighborhood();
-        cy.elements().not(neighborhood).addClass('dimmed');
-        node.addClass('highlighted');
-        node.connectedEdges().addClass('highlighted');
-        node.neighborhood('node').addClass('highlighted');
+      cy.on('tap', 'node', (event: any) => {
+        const tappedNode = event.target;
+        highlightNodeNeighborhood(cy, tappedNode);
+        setInspectedItem(extractTappedNodeInspection(tappedNode));
+      });
 
-        const d = node.data();
-        const connectedEdges = node.connectedEdges().map((e: any) => e.data());
-        const belongsTo = connectedEdges
-          .filter((e: any) => e.type === 'BELONGS_TO_TOPIC')
-          .map((e: any) => (d.type === 'topic' ? e.sourceName : e.targetName));
-        const coOccurs = connectedEdges
-          .filter((e: any) => e.type === 'CO_OCCURS_WITH')
-          .map((e: any) => ({
-            partner: e.source === d.id ? e.targetName : e.sourceName,
-            npmi: e.npmi ?? e.weight,
-            cooccur: e.cooccur ?? 3,
-            pmi: e.pmi ?? 0
-          }))
-          .sort((a: any, b: any) => (b.npmi || 0) - (a.npmi || 0));
+      cy.on('tap', 'edge', (event: any) => {
+        const tappedEdge = event.target;
+        highlightEdgeEndpoints(cy, tappedEdge);
+        setInspectedItem(extractTappedEdgeInspection(tappedEdge));
+      });
 
-        setInspectedItem({
-          kind: 'node',
-          id: d.id,
-          label: d.label,
-          type: d.type,
-          weight: d.weight,
-          belongsTo,
-          coOccurs
-        });
-      };
-
-      const inspectEdge = (edge: any) => {
-        cy.elements().removeClass('highlighted dimmed');
-        cy.elements().not(edge).not(edge.connectedNodes()).addClass('dimmed');
-        edge.addClass('highlighted');
-        edge.connectedNodes().addClass('highlighted');
-
-        const d = edge.data();
-        setInspectedItem({
-          kind: 'edge',
-          id: d.id,
-          type: d.type,
-          sourceName: d.sourceName || String(d.source).replace(/^(entity_|topic_)/, ''),
-          targetName: d.targetName || String(d.target).replace(/^(entity_|topic_)/, ''),
-          npmi: d.npmi ?? d.weight,
-          cooccur: d.cooccur,
-          pmi: d.pmi
-        });
-      };
-
-      cy.on('tap', 'node', (evt: any) => inspectNode(evt.target));
-      cy.on('tap', 'edge', (evt: any) => inspectEdge(evt.target));
-      cy.on('tap', (evt: any) => {
-        if (evt.target === cy) {
+      cy.on('tap', (event: any) => {
+        if (event.target === cy) {
           cy.elements().removeClass('highlighted dimmed');
           setInspectedItem(null);
         }
@@ -441,9 +185,9 @@ function KnowledgeGraph({
 
       if (typeof ResizeObserver !== 'undefined') {
         resizeObserver = new ResizeObserver(() => {
-          if (cyRef.current) {
-            cyRef.current.resize();
-            cyRef.current.fit(20);
+          if (cytoscapeInstanceRef.current) {
+            cytoscapeInstanceRef.current.resize();
+            cytoscapeInstanceRef.current.fit(20);
           }
         });
         resizeObserver.observe(containerRef.current);
@@ -454,27 +198,27 @@ function KnowledgeGraph({
       if (resizeObserver) {
         resizeObserver.disconnect();
       }
-      if (cyRef.current) {
-        cyRef.current.destroy();
+      if (cytoscapeInstanceRef.current) {
+        cytoscapeInstanceRef.current.destroy();
       }
     };
   }, [graphData, theme, isDark, embedded, showEdgeLabels]);
 
-  const cardStyle = {
+  const cardStyle: React.CSSProperties = {
     backgroundColor: theme.bgCard,
     borderRadius: '16px',
     border: `1px solid ${theme.border}`,
     padding: '24px',
     boxShadow: '0 2px 10px rgba(0,0,0,0.03)',
     display: 'flex',
-    flexDirection: 'column' as const,
+    flexDirection: 'column',
     height: embedded ? '100%' : 'auto',
     minHeight: embedded ? '500px' : '680px',
-    boxSizing: 'border-box' as const,
-    textAlign: 'left' as const
+    boxSizing: 'border-box',
+    textAlign: 'left',
   };
 
-  const filterStyle = {
+  const filterControlStyle: React.CSSProperties = {
     padding: '6px 10px',
     borderRadius: '8px',
     border: `1px solid ${theme.border}`,
@@ -483,12 +227,11 @@ function KnowledgeGraph({
     fontSize: '11px',
     fontWeight: '600',
     outline: 'none',
-    cursor: 'pointer'
+    cursor: 'pointer',
   };
 
   return (
     <article className="card-hover-effect" style={cardStyle}>
-      {/* Header & Controls */}
       <div style={{ display: 'flex', justifyContent: 'space-between', alignItems: 'center', marginBottom: '12px', flexWrap: 'wrap', gap: '10px' }}>
         <div style={{ display: 'flex', alignItems: 'center', gap: '10px' }}>
           <div style={{
@@ -499,7 +242,7 @@ function KnowledgeGraph({
             display: 'flex',
             alignItems: 'center',
             justifyContent: 'center',
-            color: '#0284c7'
+            color: '#0284c7',
           }}>
             <svg width="20" height="20" viewBox="0 0 24 24" fill="none" stroke="currentColor" strokeWidth="2" strokeLinecap="round" strokeLinejoin="round">
               <circle cx="18" cy="5" r="3"></circle>
@@ -514,7 +257,7 @@ function KnowledgeGraph({
             <p style={{ color: theme.textMuted, margin: '2px 0 0 0', fontSize: '11px' }}>
               {selectedTopic
                 ? `Jaringan entitas terhubung: ${selectedTopic}`
-                : `${statsSummary.nodesCount} Nodes | ${statsSummary.btCount} BELONGS_TO_TOPIC | ${statsSummary.coCount} CO_OCCURS_WITH`}
+                : `${statsSummary.nodesCount} Nodes | ${statsSummary.belongsToEdgeCount} BELONGS_TO_TOPIC | ${statsSummary.coOccursEdgeCount} CO_OCCURS_WITH`}
             </p>
           </div>
         </div>
@@ -526,11 +269,10 @@ function KnowledgeGraph({
             </span>
           )}
 
-          {/* Filter Tipe Edge (2 Tipe Relasi) */}
           <select
-            style={filterStyle}
-            value={edgeFilter}
-            onChange={(e) => setEdgeFilter(e.target.value as any)}
+            style={filterControlStyle}
+            value={edgeTypeFilter}
+            onChange={(event) => setEdgeTypeFilter(event.target.value as any)}
             title="Filter Tipe Relasi (Edge)"
           >
             <option value="All">Relasi: Semua (2 Tipe Edge)</option>
@@ -538,25 +280,23 @@ function KnowledgeGraph({
             <option value="BELONGS_TO_TOPIC">BELONGS_TO_TOPIC (Entity → Topic)</option>
           </select>
 
-          {/* Filter Kategori Entitas */}
           <select
-            style={filterStyle}
-            value={entityType}
-            onChange={(e) => setEntityType(e.target.value)}
+            style={filterControlStyle}
+            value={entityTypeFilter}
+            onChange={(event) => setEntityTypeFilter(event.target.value)}
             title="Filter Kategori Node"
           >
-            {ENTITY_CATEGORIES.map((cat) => (
-              <option key={cat.id} value={cat.id}>
-                {cat.label}
+            {ENTITY_CATEGORIES.map((categoryOption) => (
+              <option key={categoryOption.id} value={categoryOption.id}>
+                {categoryOption.label}
               </option>
             ))}
           </select>
 
-          {/* Filter Minimum Mention */}
           <select
-            style={filterStyle}
-            value={minFreq}
-            onChange={(e) => setMinFreq(e.target.value)}
+            style={filterControlStyle}
+            value={minFrequencyFilter}
+            onChange={(event) => setMinFrequencyFilter(event.target.value)}
             title="Filter Minimum Mention Count"
           >
             <option value="0">Min Mention: Semua (≥ 3)</option>
@@ -566,15 +306,14 @@ function KnowledgeGraph({
             <option value="50">Min Mention: ≥ 50</option>
           </select>
 
-          {/* Toggle Label Edge */}
           <button
             type="button"
-            onClick={() => setShowEdgeLabels((prev) => !prev)}
+            onClick={() => setShowEdgeLabels((previous) => !previous)}
             style={{
-              ...filterStyle,
+              ...filterControlStyle,
               backgroundColor: showEdgeLabels ? '#dbeafe' : theme.inputBg || '#f8fafc',
               color: showEdgeLabels ? '#1d4ed8' : theme.textMain,
-              borderColor: showEdgeLabels ? '#93c5fd' : theme.border
+              borderColor: showEdgeLabels ? '#93c5fd' : theme.border,
             }}
           >
             {showEdgeLabels ? '🏷️ Label Edge: ON' : '🏷️ Label Edge: OFF'}
@@ -582,7 +321,6 @@ function KnowledgeGraph({
         </div>
       </div>
 
-      {/* Graph Canvas + Interactive Relationship Inspector */}
       <div style={{
         flex: 1,
         position: 'relative',
@@ -591,11 +329,10 @@ function KnowledgeGraph({
         borderRadius: '10px',
         overflow: 'hidden',
         backgroundColor: isDark ? '#0f172a' : '#f8fafc',
-        border: `1px solid ${theme.border}`
+        border: `1px solid ${theme.border}`,
       }}>
         <div ref={containerRef} style={{ width: '100%', height: '100%', position: 'absolute', top: 0, left: 0 }} />
 
-        {/* Hint Petunjuk Klik */}
         {!inspectedItem && (
           <div style={{
             position: 'absolute',
@@ -608,179 +345,27 @@ function KnowledgeGraph({
             fontSize: '11px',
             color: theme.textMuted,
             pointerEvents: 'none',
-            boxShadow: '0 2px 6px rgba(0,0,0,0.05)'
+            boxShadow: '0 2px 6px rgba(0,0,0,0.05)',
           }}>
             💡 Klik <strong>Node</strong> atau <strong>Garis Edge</strong> untuk melihat detail relasi <code>BELONGS_TO_TOPIC</code> &amp; <code>CO_OCCURS_WITH</code>
           </div>
         )}
 
-        {/* Inspector Panel untuk Node / Edge yang Diklik */}
         {inspectedItem && (
-          <div style={{
-            position: 'absolute',
-            top: '10px',
-            right: '10px',
-            width: '290px',
-            maxHeight: 'calc(100% - 20px)',
-            overflowY: 'auto',
-            backgroundColor: isDark ? 'rgba(15, 23, 42, 0.96)' : 'rgba(255, 255, 255, 0.97)',
-            border: `1px solid ${theme.border}`,
-            borderRadius: '12px',
-            padding: '12px 14px',
-            fontSize: '11px',
-            color: theme.textMain,
-            boxShadow: '0 4px 16px rgba(0,0,0,0.12)',
-            zIndex: 20
-          }}>
-            <div style={{ display: 'flex', justifyContent: 'space-between', alignItems: 'flex-start', gap: '8px', marginBottom: '8px' }}>
-              <div>
-                <span style={{
-                  display: 'inline-block',
-                  padding: '2px 7px',
-                  borderRadius: '6px',
-                  fontSize: '10px',
-                  fontWeight: '700',
-                  color: '#ffffff',
-                  backgroundColor:
-                    inspectedItem.kind === 'node'
-                      ? ENTITY_COLORS[inspectedItem.type] || '#64748b'
-                      : inspectedItem.type === 'CO_OCCURS_WITH'
-                      ? '#0284c7'
-                      : '#64748b',
-                  marginBottom: '4px',
-                  textTransform: 'uppercase'
-                }}>
-                  {inspectedItem.kind === 'node' ? inspectedItem.type : inspectedItem.type}
-                </span>
-                <div style={{ fontWeight: '800', fontSize: '13px', color: theme.textMain }}>
-                  {inspectedItem.kind === 'node'
-                    ? inspectedItem.label
-                    : `${inspectedItem.sourceName} ↔ ${inspectedItem.targetName}`}
-                </div>
-              </div>
-              <button
-                type="button"
-                onClick={() => {
-                  if (cyRef.current) cyRef.current.elements().removeClass('highlighted dimmed');
-                  setInspectedItem(null);
-                }}
-                style={{
-                  border: 'none',
-                  background: 'transparent',
-                  color: theme.textMuted,
-                  cursor: 'pointer',
-                  fontWeight: '800',
-                  fontSize: '13px',
-                  padding: '0 4px'
-                }}
-              >
-                ✕
-              </button>
-            </div>
-
-            {inspectedItem.kind === 'node' ? (
-              <div style={{ display: 'flex', flexDirection: 'column', gap: '8px' }}>
-                {inspectedItem.type !== 'topic' && (
-                  <div style={{ color: theme.textMuted }}>
-                    Frekuensi Sebutan: <strong style={{ color: theme.textMain }}>{inspectedItem.weight} mentions</strong>
-                  </div>
-                )}
-
-                {/* Relasi BELONGS_TO_TOPIC */}
-                <div style={{ borderTop: `1px solid ${theme.border}`, paddingTop: '6px' }}>
-                  <div style={{ fontWeight: '700', color: '#f97316', marginBottom: '4px' }}>
-                    1. Relasi BELONGS_TO_TOPIC ({inspectedItem.belongsTo.length}):
-                  </div>
-                  {inspectedItem.belongsTo.length === 0 ? (
-                    <div style={{ color: theme.textMuted, fontStyle: 'italic' }}>Tidak ada relasi topik</div>
-                  ) : (
-                    <div style={{ display: 'flex', flexWrap: 'wrap', gap: '4px' }}>
-                      {inspectedItem.belongsTo.map((tName: string, i: number) => (
-                        <span
-                          key={i}
-                          style={{
-                            backgroundColor: isDark ? '#1e293b' : '#fff7ed',
-                            color: '#ea580c',
-                            border: '1px solid #fed7aa',
-                            borderRadius: '6px',
-                            padding: '2px 6px',
-                            fontSize: '10px',
-                            fontWeight: '600'
-                          }}
-                        >
-                          {tName}
-                        </span>
-                      ))}
-                    </div>
-                  )}
-                </div>
-
-                {/* Relasi CO_OCCURS_WITH */}
-                {inspectedItem.type !== 'topic' && (
-                  <div style={{ borderTop: `1px solid ${theme.border}`, paddingTop: '6px' }}>
-                    <div style={{ fontWeight: '700', color: '#0284c7', marginBottom: '4px' }}>
-                      2. Relasi CO_OCCURS_WITH ({inspectedItem.coOccurs.length} entitas):
-                    </div>
-                    {inspectedItem.coOccurs.length === 0 ? (
-                      <div style={{ color: theme.textMuted, fontStyle: 'italic' }}>
-                        Tidak ada ko-okurensi (NPMI ≥ 0.4) dengan entitas lain
-                      </div>
-                    ) : (
-                      <div style={{ display: 'flex', flexDirection: 'column', gap: '4px', maxHeight: '140px', overflowY: 'auto' }}>
-                        {inspectedItem.coOccurs.map((co: any, i: number) => (
-                          <div
-                            key={i}
-                            style={{
-                              display: 'flex',
-                              justifyContent: 'space-between',
-                              alignItems: 'center',
-                              backgroundColor: isDark ? '#1e293b' : '#f0f9ff',
-                              border: '1px solid #bae6fd',
-                              borderRadius: '6px',
-                              padding: '3px 7px',
-                              fontSize: '10px'
-                            }}
-                          >
-                            <strong style={{ color: isDark ? '#e2e8f0' : '#0369a1' }}>{co.partner}</strong>
-                            <span style={{ color: theme.textMuted }}>
-                              NPMI: <strong>{Number(co.npmi || 0).toFixed(2)}</strong> | Co-occur: <strong>{co.cooccur}x</strong>
-                            </span>
-                          </div>
-                        ))}
-                      </div>
-                    )}
-                  </div>
-                )}
-              </div>
-            ) : (
-              <div style={{ display: 'flex', flexDirection: 'column', gap: '6px', borderTop: `1px solid ${theme.border}`, paddingTop: '6px' }}>
-                {inspectedItem.type === 'CO_OCCURS_WITH' ? (
-                  <>
-                    <div>
-                      Relasi: <strong>(:Entity)-[:CO_OCCURS_WITH]-(:Entity)</strong>
-                    </div>
-                    <div>
-                      Skor Weight (NPMI): <strong>{Number(inspectedItem.npmi || 0).toFixed(4)}</strong>
-                    </div>
-                    <div>
-                      Frekuensi Kemunculan Bersama (cooccur): <strong>{inspectedItem.cooccur || 3} kali</strong>
-                    </div>
-                    <div>
-                      Skor PMI: <strong>{Number(inspectedItem.pmi || 0).toFixed(4)}</strong>
-                    </div>
-                  </>
-                ) : (
-                  <div>
-                    Relasi: <strong>(:Entity)-[:BELONGS_TO_TOPIC]-&gt;(:Topic)</strong>
-                  </div>
-                )}
-              </div>
-            )}
-          </div>
+          <GraphInspectorPanel
+            inspectedItem={inspectedItem}
+            theme={theme}
+            isDark={isDark}
+            onClose={() => {
+              if (cytoscapeInstanceRef.current) {
+                cytoscapeInstanceRef.current.elements().removeClass('highlighted dimmed');
+              }
+              setInspectedItem(null);
+            }}
+          />
         )}
       </div>
 
-      {/* Legend 2 Tipe Edge (Relasi) */}
       <div style={{
         display: 'flex',
         gap: '18px',
@@ -790,64 +375,609 @@ function KnowledgeGraph({
         backgroundColor: isDark ? '#1e293b' : '#f1f5f9',
         justifyContent: 'center',
         flexWrap: 'wrap',
-        border: `1px solid ${theme.border}`
+        border: `1px solid ${theme.border}`,
       }}>
         <div style={{ display: 'flex', alignItems: 'center', gap: '8px', fontSize: '11px', fontWeight: '700', color: theme.textMain }}>
-          <span style={{
-            width: '28px',
-            height: '0px',
-            borderTop: '3px solid #0284c7',
-            display: 'inline-block'
-          }}></span>
+          <span style={{ width: '28px', height: '0px', borderTop: '3px solid #0284c7', display: 'inline-block' }}></span>
           <span>
-            <code>CO_OCCURS_WITH</code> (Antar-Entity, NPMI ≥ 0.4, Co-occur ≥ 3): <strong>{statsSummary.coCount} edge</strong>
+            <code>CO_OCCURS_WITH</code> (Antar-Entity, NPMI ≥ 0.4, Co-occur ≥ 3): <strong>{statsSummary.coOccursEdgeCount} edge</strong>
           </span>
         </div>
         <div style={{ display: 'flex', alignItems: 'center', gap: '8px', fontSize: '11px', fontWeight: '700', color: theme.textMain }}>
-          <span style={{
-            width: '28px',
-            height: '0px',
-            borderTop: '2px dashed #64748b',
-            display: 'inline-block'
-          }}></span>
+          <span style={{ width: '28px', height: '0px', borderTop: '2px dashed #64748b', display: 'inline-block' }}></span>
           <span>
-            <code>BELONGS_TO_TOPIC</code> (Entity → Topic): <strong>{statsSummary.btCount} edge</strong>
+            <code>BELONGS_TO_TOPIC</code> (Entity → Topic): <strong>{statsSummary.belongsToEdgeCount} edge</strong>
           </span>
         </div>
       </div>
 
-      {/* Legend Lengkap 8 Kategori MBG + Topic */}
       <div style={{ display: 'flex', gap: '12px', marginTop: '10px', justifyContent: 'center', flexWrap: 'wrap' }}>
-        <div style={{ display: 'flex', alignItems: 'center', gap: '5px', fontSize: '11px', fontWeight: '600', color: theme.textMuted }}>
-          <span style={{ width: '9px', height: '9px', borderRadius: '50%', backgroundColor: ENTITY_COLORS.topic }}></span> Topic (9)
-        </div>
-        <div style={{ display: 'flex', alignItems: 'center', gap: '5px', fontSize: '11px', fontWeight: '600', color: theme.textMuted }}>
-          <span style={{ width: '9px', height: '9px', borderRadius: '50%', backgroundColor: ENTITY_COLORS.person }}></span> Person (19)
-        </div>
-        <div style={{ display: 'flex', alignItems: 'center', gap: '5px', fontSize: '11px', fontWeight: '600', color: theme.textMuted }}>
-          <span style={{ width: '9px', height: '9px', borderRadius: '50%', backgroundColor: ENTITY_COLORS.organization }}></span> Organization (12)
-        </div>
-        <div style={{ display: 'flex', alignItems: 'center', gap: '5px', fontSize: '11px', fontWeight: '600', color: theme.textMuted }}>
-          <span style={{ width: '9px', height: '9px', borderRadius: '50%', backgroundColor: ENTITY_COLORS.geopolitical }}></span> Geopolitical (26)
-        </div>
-        <div style={{ display: 'flex', alignItems: 'center', gap: '5px', fontSize: '11px', fontWeight: '600', color: theme.textMuted }}>
-          <span style={{ width: '9px', height: '9px', borderRadius: '50%', backgroundColor: ENTITY_COLORS.location }}></span> Location (5)
-        </div>
-        <div style={{ display: 'flex', alignItems: 'center', gap: '5px', fontSize: '11px', fontWeight: '600', color: theme.textMuted }}>
-          <span style={{ width: '9px', height: '9px', borderRadius: '50%', backgroundColor: ENTITY_COLORS.product }}></span> Product (23)
-        </div>
-        <div style={{ display: 'flex', alignItems: 'center', gap: '5px', fontSize: '11px', fontWeight: '600', color: theme.textMuted }}>
-          <span style={{ width: '9px', height: '9px', borderRadius: '50%', backgroundColor: ENTITY_COLORS.event }}></span> Event (10)
-        </div>
-        <div style={{ display: 'flex', alignItems: 'center', gap: '5px', fontSize: '11px', fontWeight: '600', color: theme.textMuted }}>
-          <span style={{ width: '9px', height: '9px', borderRadius: '50%', backgroundColor: ENTITY_COLORS.norm }}></span> Norm (33)
-        </div>
-        <div style={{ display: 'flex', alignItems: 'center', gap: '5px', fontSize: '11px', fontWeight: '600', color: theme.textMuted }}>
-          <span style={{ width: '9px', height: '9px', borderRadius: '50%', backgroundColor: ENTITY_COLORS.facility }}></span> Facility (0)
-        </div>
+        {ENTITY_LEGEND_ITEMS.map((legendItem) => (
+          <div
+            key={legendItem.key}
+            style={{ display: 'flex', alignItems: 'center', gap: '5px', fontSize: '11px', fontWeight: '600', color: theme.textMuted }}
+          >
+            <span
+              style={{
+                width: '9px',
+                height: '9px',
+                borderRadius: '50%',
+                backgroundColor: ENTITY_COLORS[legendItem.key],
+              }}
+            />
+            {legendItem.label}
+          </div>
+        ))}
       </div>
     </article>
   );
+}
+
+function GraphInspectorPanel({
+  inspectedItem,
+  theme,
+  isDark,
+  onClose,
+}: {
+  inspectedItem: any;
+  theme: any;
+  isDark?: boolean;
+  onClose: () => void;
+}) {
+  const badgeColor =
+    inspectedItem.kind === 'node'
+      ? ENTITY_COLORS[inspectedItem.type] || '#64748b'
+      : inspectedItem.type === 'CO_OCCURS_WITH'
+        ? '#0284c7'
+        : '#64748b';
+
+  return (
+    <div style={{
+      position: 'absolute',
+      top: '10px',
+      right: '10px',
+      width: '290px',
+      maxHeight: 'calc(100% - 20px)',
+      overflowY: 'auto',
+      backgroundColor: isDark ? 'rgba(15, 23, 42, 0.96)' : 'rgba(255, 255, 255, 0.97)',
+      border: `1px solid ${theme.border}`,
+      borderRadius: '12px',
+      padding: '12px 14px',
+      fontSize: '11px',
+      color: theme.textMain,
+      boxShadow: '0 4px 16px rgba(0,0,0,0.12)',
+      zIndex: 20,
+    }}>
+      <div style={{ display: 'flex', justifyContent: 'space-between', alignItems: 'flex-start', gap: '8px', marginBottom: '8px' }}>
+        <div>
+          <span style={{
+            display: 'inline-block',
+            padding: '2px 7px',
+            borderRadius: '6px',
+            fontSize: '10px',
+            fontWeight: '700',
+            color: '#ffffff',
+            backgroundColor: badgeColor,
+            marginBottom: '4px',
+            textTransform: 'uppercase',
+          }}>
+            {inspectedItem.type}
+          </span>
+          <div style={{ fontWeight: '800', fontSize: '13px', color: theme.textMain }}>
+            {inspectedItem.kind === 'node'
+              ? inspectedItem.label
+              : `${inspectedItem.sourceName} ↔ ${inspectedItem.targetName}`}
+          </div>
+        </div>
+        <button
+          type="button"
+          onClick={onClose}
+          style={{
+            border: 'none',
+            background: 'transparent',
+            color: theme.textMuted,
+            cursor: 'pointer',
+            fontWeight: '800',
+            fontSize: '13px',
+            padding: '0 4px',
+          }}
+        >
+          ✕
+        </button>
+      </div>
+
+      {inspectedItem.kind === 'node' ? (
+        <div style={{ display: 'flex', flexDirection: 'column', gap: '8px' }}>
+          {inspectedItem.type !== 'topic' && (
+            <div style={{ color: theme.textMuted }}>
+              Frekuensi Sebutan: <strong style={{ color: theme.textMain }}>{inspectedItem.weight} mentions</strong>
+            </div>
+          )}
+
+          <div style={{ borderTop: `1px solid ${theme.border}`, paddingTop: '6px' }}>
+            <div style={{ fontWeight: '700', color: '#f97316', marginBottom: '4px' }}>
+              1. Relasi BELONGS_TO_TOPIC ({inspectedItem.belongsTo.length}):
+            </div>
+            {inspectedItem.belongsTo.length === 0 ? (
+              <div style={{ color: theme.textMuted, fontStyle: 'italic' }}>Tidak ada relasi topik</div>
+            ) : (
+              <div style={{ display: 'flex', flexWrap: 'wrap', gap: '4px' }}>
+                {inspectedItem.belongsTo.map((topicName: string, index: number) => (
+                  <span
+                    key={index}
+                    style={{
+                      backgroundColor: isDark ? '#1e293b' : '#fff7ed',
+                      color: '#ea580c',
+                      border: '1px solid #fed7aa',
+                      borderRadius: '6px',
+                      padding: '2px 6px',
+                      fontSize: '10px',
+                      fontWeight: '600',
+                    }}
+                  >
+                    {topicName}
+                  </span>
+                ))}
+              </div>
+            )}
+          </div>
+
+          {inspectedItem.type !== 'topic' && (
+            <div style={{ borderTop: `1px solid ${theme.border}`, paddingTop: '6px' }}>
+              <div style={{ fontWeight: '700', color: '#0284c7', marginBottom: '4px' }}>
+                2. Relasi CO_OCCURS_WITH ({inspectedItem.coOccurs.length} entitas):
+              </div>
+              {inspectedItem.coOccurs.length === 0 ? (
+                <div style={{ color: theme.textMuted, fontStyle: 'italic' }}>
+                  Tidak ada ko-okurensi (NPMI ≥ 0.4) dengan entitas lain
+                </div>
+              ) : (
+                <div style={{ display: 'flex', flexDirection: 'column', gap: '4px', maxHeight: '140px', overflowY: 'auto' }}>
+                  {inspectedItem.coOccurs.map((coOccurrenceItem: any, index: number) => (
+                    <div
+                      key={index}
+                      style={{
+                        display: 'flex',
+                        justifyContent: 'space-between',
+                        alignItems: 'center',
+                        backgroundColor: isDark ? '#1e293b' : '#f0f9ff',
+                        border: '1px solid #bae6fd',
+                        borderRadius: '6px',
+                        padding: '3px 7px',
+                        fontSize: '10px',
+                      }}
+                    >
+                      <strong style={{ color: isDark ? '#e2e8f0' : '#0369a1' }}>
+                        {coOccurrenceItem.partner}
+                      </strong>
+                      <span style={{ color: theme.textMuted }}>
+                        NPMI: <strong>{Number(coOccurrenceItem.npmi || 0).toFixed(2)}</strong> | Co-occur: <strong>{coOccurrenceItem.cooccur}x</strong>
+                      </span>
+                    </div>
+                  ))}
+                </div>
+              )}
+            </div>
+          )}
+        </div>
+      ) : (
+        <div style={{ display: 'flex', flexDirection: 'column', gap: '6px', borderTop: `1px solid ${theme.border}`, paddingTop: '6px' }}>
+          {inspectedItem.type === 'CO_OCCURS_WITH' ? (
+            <>
+              <div>
+                Relasi: <strong>(:Entity)-[:CO_OCCURS_WITH]-(:Entity)</strong>
+              </div>
+              <div>
+                Skor Weight (NPMI): <strong>{Number(inspectedItem.npmi || 0).toFixed(4)}</strong>
+              </div>
+              <div>
+                Frekuensi Kemunculan Bersama (cooccur): <strong>{inspectedItem.cooccur || 3} kali</strong>
+              </div>
+              <div>
+                Skor PMI: <strong>{Number(inspectedItem.pmi || 0).toFixed(4)}</strong>
+              </div>
+            </>
+          ) : (
+            <div>
+              Relasi: <strong>(:Entity)-[:BELONGS_TO_TOPIC]-&gt;(:Topic)</strong>
+            </div>
+          )}
+        </div>
+      )}
+    </div>
+  );
+}
+
+function filterCytoscapeGraph({
+  apiGraphElements,
+  minFrequencyFilter,
+  entityTypeFilter,
+  selectedTopic,
+  edgeTypeFilter,
+}: {
+  apiGraphElements: CytoscapeGraphElements | null;
+  minFrequencyFilter: string;
+  entityTypeFilter: string;
+  selectedTopic: string | null;
+  edgeTypeFilter: 'All' | 'CO_OCCURS_WITH' | 'BELONGS_TO_TOPIC';
+}): {
+  graphData: CytoscapeGraphElements;
+  statsSummary: GraphStatsSummary;
+} {
+  const baseGraph =
+    apiGraphElements && apiGraphElements.nodes.length > 0
+      ? apiGraphElements
+      : buildMbgFallbackGraph();
+
+  let candidateNodes = [...baseGraph.nodes];
+  const allEdges = [...baseGraph.edges];
+
+  const frequencyThreshold = parseInt(minFrequencyFilter, 10);
+  if (!isNaN(frequencyThreshold) && frequencyThreshold > 0) {
+    candidateNodes = candidateNodes.filter((nodeElement: any) => {
+      if (nodeElement.data?.type === 'topic') {
+        return true;
+      }
+      return Number(nodeElement.data?.weight || 0) >= frequencyThreshold;
+    });
+  }
+
+  if (entityTypeFilter !== 'All') {
+    candidateNodes = filterNodesByEntityCategory(
+      candidateNodes,
+      allEdges,
+      entityTypeFilter.toLowerCase()
+    );
+  }
+
+  if (selectedTopic) {
+    candidateNodes = filterNodesByTopicName(
+      candidateNodes,
+      allEdges,
+      selectedTopic.toLowerCase()
+    );
+  }
+
+  const validNodeIds = new Set(candidateNodes.map((nodeElement: any) => String(nodeElement.data.id)));
+  let filteredEdges = allEdges.filter(
+    (edgeElement: any) =>
+      validNodeIds.has(String(edgeElement.data.source)) &&
+      validNodeIds.has(String(edgeElement.data.target))
+  );
+
+  if (edgeTypeFilter !== 'All') {
+    filteredEdges = filteredEdges.filter((edgeElement: any) => edgeElement.data?.type === edgeTypeFilter);
+    if (edgeTypeFilter === 'CO_OCCURS_WITH') {
+      const coOccursNodeIds = new Set<string>();
+      filteredEdges.forEach((edgeElement: any) => {
+        coOccursNodeIds.add(String(edgeElement.data.source));
+        coOccursNodeIds.add(String(edgeElement.data.target));
+      });
+      candidateNodes = candidateNodes.filter(
+        (nodeElement: any) =>
+          nodeElement.data?.type !== 'topic' &&
+          (coOccursNodeIds.size === 0 || coOccursNodeIds.has(String(nodeElement.data.id)))
+      );
+    }
+  }
+
+  const belongsToEdgeCount = filteredEdges.filter(
+    (edgeElement: any) => edgeElement.data?.type === 'BELONGS_TO_TOPIC'
+  ).length;
+  const coOccursEdgeCount = filteredEdges.filter(
+    (edgeElement: any) => edgeElement.data?.type === 'CO_OCCURS_WITH'
+  ).length;
+
+  return {
+    graphData: { nodes: candidateNodes, edges: filteredEdges },
+    statsSummary: {
+      nodesCount: candidateNodes.length,
+      edgesCount: filteredEdges.length,
+      belongsToEdgeCount,
+      coOccursEdgeCount,
+    },
+  };
+}
+
+function filterNodesByEntityCategory(
+  nodes: any[],
+  edges: any[],
+  targetCategory: string
+): any[] {
+  if (targetCategory === 'topic') {
+    const topicNodeIds = new Set(
+      nodes
+        .filter((nodeElement: any) => nodeElement.data?.type === 'topic')
+        .map((nodeElement: any) => String(nodeElement.data.id))
+    );
+    const connectedEntityIds = new Set<string>();
+
+    edges.forEach((edgeElement: any) => {
+      if (edgeElement.data?.type === 'BELONGS_TO_TOPIC') {
+        const sourceId = String(edgeElement.data.source);
+        const targetId = String(edgeElement.data.target);
+        if (topicNodeIds.has(targetId)) {
+          connectedEntityIds.add(sourceId);
+        }
+        if (topicNodeIds.has(sourceId)) {
+          connectedEntityIds.add(targetId);
+        }
+      }
+    });
+
+    return nodes.filter(
+      (nodeElement: any) =>
+        topicNodeIds.has(String(nodeElement.data.id)) ||
+        connectedEntityIds.has(String(nodeElement.data.id))
+    );
+  }
+
+  const primaryEntityIds = new Set(
+    nodes
+      .filter((nodeElement: any) => String(nodeElement.data?.type || '').toLowerCase() === targetCategory)
+      .map((nodeElement: any) => String(nodeElement.data.id))
+  );
+  const neighborNodeIds = new Set<string>();
+
+  edges.forEach((edgeElement: any) => {
+    const sourceId = String(edgeElement.data.source);
+    const targetId = String(edgeElement.data.target);
+    if (primaryEntityIds.has(sourceId)) {
+      neighborNodeIds.add(targetId);
+    }
+    if (primaryEntityIds.has(targetId)) {
+      neighborNodeIds.add(sourceId);
+    }
+  });
+
+  return nodes.filter(
+    (nodeElement: any) =>
+      primaryEntityIds.has(String(nodeElement.data.id)) ||
+      neighborNodeIds.has(String(nodeElement.data.id))
+  );
+}
+
+function filterNodesByTopicName(
+  nodes: any[],
+  edges: any[],
+  normalizedSelectedTopic: string
+): any[] {
+  const connectedIds = new Set<string>();
+
+  nodes.forEach((nodeElement: any) => {
+    const nodeLabel = String(nodeElement.data?.label || '').toLowerCase();
+    if (nodeElement.data?.type === 'topic' && nodeLabel.includes(normalizedSelectedTopic)) {
+      connectedIds.add(String(nodeElement.data.id));
+    }
+  });
+
+  edges.forEach((edgeElement: any) => {
+    const sourceId = String(edgeElement.data.source);
+    const targetId = String(edgeElement.data.target);
+    if (connectedIds.has(targetId)) {
+      connectedIds.add(sourceId);
+    }
+    if (connectedIds.has(sourceId)) {
+      connectedIds.add(targetId);
+    }
+  });
+
+  edges.forEach((edgeElement: any) => {
+    if (edgeElement.data?.type === 'CO_OCCURS_WITH') {
+      const sourceId = String(edgeElement.data.source);
+      const targetId = String(edgeElement.data.target);
+      if (connectedIds.has(sourceId)) {
+        connectedIds.add(targetId);
+      }
+      if (connectedIds.has(targetId)) {
+        connectedIds.add(sourceId);
+      }
+    }
+  });
+
+  if (connectedIds.size === 0) {
+    return nodes;
+  }
+
+  return nodes.filter((nodeElement: any) => connectedIds.has(String(nodeElement.data.id)));
+}
+
+function buildCytoscapeStylesheet({
+  theme,
+  isDark,
+  embedded,
+  showEdgeLabels,
+}: {
+  theme: any;
+  isDark?: boolean;
+  embedded: boolean;
+  showEdgeLabels: boolean;
+}): any[] {
+  return [
+    {
+      selector: 'node',
+      style: {
+        label: 'data(label)',
+        'text-valign': 'bottom',
+        'text-margin-y': 4,
+        color: theme.textMain,
+        'font-weight': 'bold',
+        'font-size': embedded ? '10px' : '11px',
+        'text-background-color': isDark ? '#0f172a' : '#ffffff',
+        'text-background-opacity': 0.75,
+        'text-background-padding': '2px',
+        'text-background-shape': 'roundrectangle',
+        'background-color': (cytoscapeElement: any) => {
+          const elementType = String(cytoscapeElement.data('type') || '').toLowerCase();
+          return ENTITY_COLORS[elementType] || '#8b5cf6';
+        },
+        width: (cytoscapeElement: any) => calculateNodeDimension(cytoscapeElement, embedded),
+        height: (cytoscapeElement: any) => calculateNodeDimension(cytoscapeElement, embedded),
+        'border-width': (cytoscapeElement: any) =>
+          cytoscapeElement.data('type') === 'topic' ? 3 : 2,
+        'border-color': (cytoscapeElement: any) =>
+          cytoscapeElement.data('type') === 'topic' ? '#ffedd5' : '#ffffff',
+      },
+    },
+    {
+      selector: 'edge[type = "BELONGS_TO_TOPIC"]',
+      style: {
+        width: 1.5,
+        'line-style': 'dashed',
+        'line-dash-pattern': [6, 4],
+        'line-color': isDark ? '#64748b' : '#94a3b8',
+        'target-arrow-shape': 'triangle',
+        'target-arrow-color': isDark ? '#64748b' : '#94a3b8',
+        'arrow-scale': 0.8,
+        'curve-style': 'bezier',
+        opacity: 0.65,
+        label: showEdgeLabels ? 'BELONGS_TO_TOPIC' : '',
+        'font-size': '8px',
+        color: isDark ? '#cbd5e1' : '#475569',
+        'text-rotation': 'autorotate',
+        'text-background-color': isDark ? '#0f172a' : '#ffffff',
+        'text-background-opacity': 0.8,
+        'text-background-padding': '1px',
+      },
+    },
+    {
+      selector: 'edge[type = "CO_OCCURS_WITH"]',
+      style: {
+        width: (cytoscapeElement: any) => {
+          const npmiScore = Number(
+            cytoscapeElement.data('npmi') ?? cytoscapeElement.data('weight') ?? 0.5
+          );
+          return Math.max(2, Math.min(embedded ? 4.5 : 6, npmiScore * 5));
+        },
+        'line-style': 'solid',
+        'line-color': isDark ? '#38bdf8' : '#0284c7',
+        'curve-style': 'bezier',
+        opacity: 0.85,
+        label: (cytoscapeElement: any) =>
+          showEdgeLabels ? cytoscapeElement.data('label') || 'CO_OCCURS_WITH' : '',
+        'font-size': '9px',
+        'font-weight': 'bold',
+        color: isDark ? '#38bdf8' : '#0369a1',
+        'text-rotation': 'autorotate',
+        'text-background-color': isDark ? '#0f172a' : '#ffffff',
+        'text-background-opacity': 0.85,
+        'text-background-padding': '2px',
+      },
+    },
+    {
+      selector: 'node.highlighted',
+      style: {
+        'border-width': 4,
+        'border-color': '#facc15',
+        'z-index': 999,
+      },
+    },
+    {
+      selector: 'edge.highlighted',
+      style: {
+        width: 3.5,
+        opacity: 1,
+        'line-color': (cytoscapeElement: any) =>
+          cytoscapeElement.data('type') === 'BELONGS_TO_TOPIC' ? '#f97316' : '#2563eb',
+        'target-arrow-color': '#f97316',
+        label: (cytoscapeElement: any) =>
+          cytoscapeElement.data('type') === 'BELONGS_TO_TOPIC'
+            ? 'BELONGS_TO_TOPIC'
+            : `CO_OCCURS_WITH (${cytoscapeElement.data('label') || ''})`,
+        'font-size': '9px',
+        'font-weight': 'bold',
+        color: isDark ? '#f8fafc' : '#0f172a',
+        'text-background-color': isDark ? '#1e293b' : '#fef9c3',
+        'text-background-opacity': 0.95,
+        'text-background-padding': '2px',
+        'z-index': 999,
+      },
+    },
+    {
+      selector: '.dimmed',
+      style: {
+        opacity: 0.2,
+      },
+    },
+  ];
+}
+
+function calculateNodeDimension(cytoscapeElement: any, embedded: boolean): number {
+  const elementType = String(cytoscapeElement.data('type') || '').toLowerCase();
+  if (elementType === 'topic') {
+    return embedded ? 36 : 46;
+  }
+  const weightValue = Number(cytoscapeElement.data('weight') || 1);
+  return Math.max(
+    embedded ? 18 : 22,
+    Math.min(
+      embedded ? 40 : 54,
+      16 + Math.log(Math.max(1, weightValue)) * (embedded ? 4 : 5.5)
+    )
+  );
+}
+
+function highlightNodeNeighborhood(cy: any, tappedNode: any): void {
+  cy.elements().removeClass('highlighted dimmed');
+  const neighborhood = tappedNode.closedNeighborhood();
+  cy.elements().not(neighborhood).addClass('dimmed');
+  tappedNode.addClass('highlighted');
+  tappedNode.connectedEdges().addClass('highlighted');
+  tappedNode.neighborhood('node').addClass('highlighted');
+}
+
+function highlightEdgeEndpoints(cy: any, tappedEdge: any): void {
+  cy.elements().removeClass('highlighted dimmed');
+  cy.elements().not(tappedEdge).not(tappedEdge.connectedNodes()).addClass('dimmed');
+  tappedEdge.addClass('highlighted');
+  tappedEdge.connectedNodes().addClass('highlighted');
+}
+
+function extractTappedNodeInspection(tappedNode: any) {
+  const nodeData = tappedNode.data();
+  const connectedEdgesData = tappedNode
+    .connectedEdges()
+    .map((edgeElement: any) => edgeElement.data());
+
+  const belongsTo = connectedEdgesData
+    .filter((edgeData: any) => edgeData.type === 'BELONGS_TO_TOPIC')
+    .map((edgeData: any) =>
+      nodeData.type === 'topic' ? edgeData.sourceName : edgeData.targetName
+    );
+
+  const coOccurs = connectedEdgesData
+    .filter((edgeData: any) => edgeData.type === 'CO_OCCURS_WITH')
+    .map((edgeData: any) => ({
+      partner: edgeData.source === nodeData.id ? edgeData.targetName : edgeData.sourceName,
+      npmi: edgeData.npmi ?? edgeData.weight,
+      cooccur: edgeData.cooccur ?? 3,
+      pmi: edgeData.pmi ?? 0,
+    }))
+    .sort((first: any, second: any) => (second.npmi || 0) - (first.npmi || 0));
+
+  return {
+    kind: 'node',
+    id: nodeData.id,
+    label: nodeData.label,
+    type: nodeData.type,
+    weight: nodeData.weight,
+    belongsTo,
+    coOccurs,
+  };
+}
+
+function extractTappedEdgeInspection(tappedEdge: any) {
+  const edgeData = tappedEdge.data();
+  return {
+    kind: 'edge',
+    id: edgeData.id,
+    type: edgeData.type,
+    sourceName: edgeData.sourceName || String(edgeData.source).replace(/^(entity_|topic_)/, ''),
+    targetName: edgeData.targetName || String(edgeData.target).replace(/^(entity_|topic_)/, ''),
+    npmi: edgeData.npmi ?? edgeData.weight,
+    cooccur: edgeData.cooccur,
+    pmi: edgeData.pmi,
+  };
 }
 
 export default KnowledgeGraph;

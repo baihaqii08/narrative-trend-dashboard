@@ -1,188 +1,182 @@
+from typing import Any, Dict, List, Optional
 from fastapi import APIRouter, Depends, Query
+from sqlalchemy import func
 from sqlalchemy.orm import Session
-from sqlalchemy import or_, func
-from typing import Optional, List, Dict, Any
-from datetime import datetime, timedelta
+from app.api.dependencies import apply_date_filter, apply_platform_filter, parse_filter_days
+from app.core.cache import ttl_cache
+from app.core.database import SocialPost, get_db
 
-from app.api.dependencies import get_db
-from models import Post, Topic
-from app.core.cache import in_memory_cache
-from app.api.routes.dashboard import parse_filter_days, normalize_platform_filter
 
-router = APIRouter(tags=["Sentiment"])
+router = APIRouter()
 
-def serialize_post(p: Post) -> Dict[str, Any]:
-    norm_platform = (
-        "x" if p.platform and p.platform.lower() in ["twitter", "x"]
-        else "instagram" if p.platform and p.platform.lower() in ["instagram", "ig"]
-        else (p.platform or "x")
-    )
-    topic_name = getattr(p, "topic", None)
-    topic_str = topic_name.name if topic_name else (f"Topik #{p.topic_id}" if p.topic_id else "")
-    return {
-        "id": str(p.id),
-        "platform": norm_platform,
-        "original_platform": p.platform,
-        "platform_post_id": p.platform_post_id,
-        "author_username": p.author_username,
-        "username": p.author_username,
-        "author": p.author_username,
-        "content": p.content,
-        "text": p.content,
-        "likes": p.likes or 0,
-        "comments": p.comments or 0,
-        "shares": p.shares or 0,
-        "views": p.views or 0,
-        "hashtags": p.hashtags or [],
-        "sentiment": p.sentiment or "neutral",
-        "sentiment_score": p.sentiment_score or 0.0,
-        "topic": topic_str,
-        "topic_id": p.topic_id,
-        "posted_at": p.posted_at.isoformat() if p.posted_at else None,
-        "created_at": p.created_at.isoformat() if p.created_at else None,
-        "date": p.posted_at.strftime("%Y-%m-%d %H:%M:%S") if p.posted_at else None
-    }
+CACHE_TTL_SECONDS = 120
+PERCENTAGE_MULTIPLIER = 100
+EXCLUDED_TOPIC_NAMES = ("Outlier / Topik Lainnya", "Unknown", "")
 
-@router.get("/posts")
-def get_sentiment_posts(
-    days: Optional[Any] = None,
-    time_filter: Optional[str] = None,
-    sentiment: Optional[str] = None,
-    platform: Optional[str] = None,
-    limit: int = 50,
-    skip: int = 0,
-    db: Session = Depends(get_db)
-):
-    """
-    12.3: Daftar post dengan filter sentimen, waktu, dan platform.
-    """
-    query = db.query(Post)
-    filter_days = parse_filter_days(days, time_filter)
-            
-    if filter_days:
-        start_date = datetime.utcnow() - timedelta(days=filter_days)
-        query = query.filter(Post.posted_at >= start_date)
-        
-    plat_filter = normalize_platform_filter(platform)
-    if plat_filter:
-        query = query.filter(Post.platform.in_(plat_filter))
 
-    if sentiment and isinstance(sentiment, str) and sentiment.lower() != "all":
-        query = query.filter(Post.sentiment == sentiment.lower())
-        
-    posts = query.order_by(Post.posted_at.desc()).offset(skip).limit(limit).all()
-    serialized = [serialize_post(p) for p in posts]
-    return serialized
-
-@router.get("/distribution")
 @router.get("")
 @router.get("/")
-@in_memory_cache(ttl_seconds=120)
+@router.get("/summary")
+@router.get("/distribution")
+@ttl_cache(ttl_seconds=CACHE_TTL_SECONDS)
 def get_sentiment_distribution(
-    platform: Optional[str] = None,
-    days: Optional[Any] = None,
-    time_filter: Optional[str] = None,
-    db: Session = Depends(get_db)
-):
-    """
-    12.3: Distribusi sentimen (filterable by platform, date).
-    """
-    query = db.query(Post.sentiment, func.count(Post.id))
-    filter_days = parse_filter_days(days, time_filter)
-            
-    if filter_days:
-        start_date = datetime.utcnow() - timedelta(days=filter_days)
-        query = query.filter(Post.posted_at >= start_date)
+    platform: Optional[str] = Query(None, description="Filter by platform: instagram, x"),
+    topic: Optional[str] = Query(None, description="Filter by topic"),
+    days: Optional[str] = Query(None, description="Filter by past N days"),
+    timeframe: Optional[str] = Query(None, description="Alias for days"),
+    db: Session = Depends(get_db),
+) -> Dict[str, Any]:
+    filter_days = parse_filter_days(days, timeframe)
+    query = _build_sentiment_filtered_query(db, platform, topic, filter_days)
+    sentiment_counts = _aggregate_sentiment_counts(query)
+    total_posts = sum(sentiment_counts.values())
+    sentiment_percentages = _compute_sentiment_percentages(sentiment_counts, total_posts)
 
-    plat_filter = normalize_platform_filter(platform)
-    if plat_filter:
-        query = query.filter(Post.platform.in_(plat_filter))
+    return {
+        "total": total_posts,
+        "counts": sentiment_counts,
+        "percentages": sentiment_percentages,
+        "positive": sentiment_counts["positive"],
+        "neutral": sentiment_counts["neutral"],
+        "negative": sentiment_counts["negative"],
+        "positive_pct": sentiment_percentages["positive"],
+        "neutral_pct": sentiment_percentages["neutral"],
+        "negative_pct": sentiment_percentages["negative"],
+    }
 
-    counts = query.group_by(Post.sentiment).all()
-    dist = {"positive": 0, "neutral": 0, "negative": 0, "unlabeled": 0}
-    for s, c in counts:
-        k = s.lower() if s else "unlabeled"
-        if k in dist:
-            dist[k] += c
-        else:
-            dist["unlabeled"] += c
-    return dist
 
 @router.get("/timeline")
-@in_memory_cache(ttl_seconds=120)
+@router.get("/trend")
+@ttl_cache(ttl_seconds=CACHE_TTL_SECONDS)
 def get_sentiment_timeline(
-    days: Optional[Any] = None,
-    time_filter: Optional[str] = None,
-    platform: Optional[str] = None,
-    db: Session = Depends(get_db)
+    platform: Optional[str] = Query(None, description="Filter by platform"),
+    topic: Optional[str] = Query(None, description="Filter by topic"),
+    days: Optional[str] = Query(None, description="Number of past days"),
+    timeframe: Optional[str] = Query(None, description="Alias for days"),
+    db: Session = Depends(get_db),
+) -> List[Dict[str, Any]]:
+    filter_days = parse_filter_days(days, timeframe)
+    query = _build_sentiment_filtered_query(db, platform, topic, filter_days)
+    date_column = func.date(SocialPost.created_at)
+
+    daily_sentiment_rows = (
+        query.with_entities(
+            date_column.label("post_date"),
+            func.lower(SocialPost.sentiment).label("sentiment"),
+            func.count(SocialPost.id).label("post_count"),
+        )
+        .filter(SocialPost.created_at.isnot(None))
+        .group_by(date_column, func.lower(SocialPost.sentiment))
+        .order_by(date_column.asc())
+        .all()
+    )
+
+    dominant_topic_by_date_and_sentiment = _query_daily_dominant_topics(query, date_column)
+    return _assemble_timeline_points(daily_sentiment_rows, dominant_topic_by_date_and_sentiment)
+
+
+def _build_sentiment_filtered_query(
+    db: Session,
+    platform: Optional[str],
+    topic: Optional[str],
+    filter_days: Optional[int],
 ):
-    """
-    12.3: Sentimen per hari untuk visualisasi line chart sentimen.
-    Mendukung filter waktu (days, time_filter) dan platform.
-    """
-    filter_days = parse_filter_days(days, time_filter)
+    query = db.query(SocialPost)
+    query = apply_platform_filter(query, platform)
+    query = apply_date_filter(query, db, filter_days)
+    if topic and topic.lower() not in ("all", "semua"):
+        query = query.filter(SocialPost.topic.ilike(f"%{topic}%"))
+    return query
 
-    date_col = func.date(Post.posted_at).label("date")
-    query = db.query(
-        date_col,
-        Post.sentiment,
-        func.count(Post.id).label("count")
-    ).filter(Post.posted_at.isnot(None))
 
-    if filter_days:
-        start_date = datetime.utcnow() - timedelta(days=filter_days)
-        query = query.filter(Post.posted_at >= start_date)
+def _aggregate_sentiment_counts(query) -> Dict[str, int]:
+    grouped_rows = (
+        query.with_entities(
+            func.lower(SocialPost.sentiment).label("sentiment"),
+            func.count(SocialPost.id).label("post_count"),
+        )
+        .group_by(func.lower(SocialPost.sentiment))
+        .all()
+    )
 
-    plat_filter = normalize_platform_filter(platform)
-    if plat_filter:
-        query = query.filter(Post.platform.in_(plat_filter))
+    sentiment_counts = {"positive": 0, "neutral": 0, "negative": 0}
+    for sentiment_label, post_count in grouped_rows:
+        normalized_key = (sentiment_label or "neutral").lower()
+        if normalized_key in sentiment_counts:
+            sentiment_counts[normalized_key] += int(post_count or 0)
+        else:
+            sentiment_counts["neutral"] += int(post_count or 0)
+    return sentiment_counts
 
-    stats = query.group_by(date_col, Post.sentiment).order_by(date_col).all()
 
-    # Query topik dominan per hari untuk akurasi data tooltip pada Line Chart
-    daily_topics: Dict[str, str] = {}
+def _compute_sentiment_percentages(
+    sentiment_counts: Dict[str, int],
+    total_posts: int,
+) -> Dict[str, float]:
+    divisor = total_posts if total_posts > 0 else 1
+    return {
+        sentiment_key: round((count_value / divisor) * PERCENTAGE_MULTIPLIER, 1)
+        for sentiment_key, count_value in sentiment_counts.items()
+    }
+
+
+def _query_daily_dominant_topics(query, date_column) -> Dict[str, Dict[str, str]]:
+    dominant_topics: Dict[str, Dict[str, str]] = {}
     try:
-        t_query = db.query(
-            date_col,
-            Topic.name,
-            func.count(Post.id)
-        ).join(Topic, Post.topic_id == Topic.id)\
-         .filter(Post.posted_at.isnot(None))
-        if filter_days:
-            t_query = t_query.filter(Post.posted_at >= start_date)
-        if plat_filter:
-            t_query = t_query.filter(Post.platform.in_(plat_filter))
-        t_rows = t_query.group_by(date_col, Topic.name).order_by(date_col, func.count(Post.id).desc()).all()
-        for d_v, t_name, _ in t_rows:
-            d_s = str(d_v) if d_v else "unknown"
-            if d_s not in daily_topics:
-                daily_topics[d_s] = t_name
+        topic_rows = (
+            query.with_entities(
+                date_column.label("post_date"),
+                func.lower(SocialPost.sentiment).label("sentiment"),
+                SocialPost.topic,
+                func.count(SocialPost.id).label("topic_count"),
+            )
+            .filter(
+                SocialPost.created_at.isnot(None),
+                SocialPost.topic.isnot(None),
+                ~SocialPost.topic.in_(EXCLUDED_TOPIC_NAMES),
+            )
+            .group_by(date_column, func.lower(SocialPost.sentiment), SocialPost.topic)
+            .order_by(date_column.asc(), func.count(SocialPost.id).desc())
+            .all()
+        )
+        for post_date, sentiment_label, topic_name, _ in topic_rows:
+            date_key = str(post_date)
+            sentiment_key = (sentiment_label or "neutral").lower()
+            if date_key not in dominant_topics:
+                dominant_topics[date_key] = {}
+            if sentiment_key not in dominant_topics[date_key]:
+                dominant_topics[date_key][sentiment_key] = topic_name
     except Exception:
-        pass
+        return {}
+    return dominant_topics
 
-    timeline_dict: Dict[str, Dict[str, Any]] = {}
-    for date_val, sent, count in stats:
-        d_str = str(date_val) if date_val else "unknown"
-        if d_str not in timeline_dict:
-            timeline_dict[d_str] = {
-                "date": d_str,
+
+def _assemble_timeline_points(
+    daily_sentiment_rows: List[Any],
+    dominant_topic_by_date_and_sentiment: Dict[str, Dict[str, str]],
+) -> List[Dict[str, Any]]:
+    timeline_by_date: Dict[str, Dict[str, Any]] = {}
+    for post_date, sentiment_label, post_count in daily_sentiment_rows:
+        date_string = str(post_date)
+        if date_string not in timeline_by_date:
+            daily_topics = dominant_topic_by_date_and_sentiment.get(date_string, {})
+            timeline_by_date[date_string] = {
+                "date": date_string,
                 "positive": 0,
                 "neutral": 0,
                 "negative": 0,
                 "total": 0,
-                "dominant_topic": daily_topics.get(d_str, "Program Makan Bergizi Gratis (MBG)"),
-                "topPositiveTopic": daily_topics.get(d_str, "Program Makan Bergizi Gratis (MBG)"),
-                "topNeutralTopic": daily_topics.get(d_str, "Program Makan Bergizi Gratis (MBG)"),
-                "topNegativeTopic": daily_topics.get(d_str, "Program Makan Bergizi Gratis (MBG)")
+                "top_topic_positive": daily_topics.get("positive", "Program Makan Bergizi Gratis (MBG)"),
+                "top_topic_neutral": daily_topics.get("neutral", "Program Makan Bergizi Gratis (MBG)"),
+                "top_topic_negative": daily_topics.get("negative", "Evaluasi & Pengawasan MBG"),
             }
-        s_key = sent.lower() if sent else "unlabeled"
-        if s_key in timeline_dict[d_str]:
-            timeline_dict[d_str][s_key] += count
-        timeline_dict[d_str]["total"] += count
-        if d_str in daily_topics:
-            timeline_dict[d_str]["dominant_topic"] = daily_topics[d_str]
-            timeline_dict[d_str]["topPositiveTopic"] = daily_topics[d_str]
-            timeline_dict[d_str]["topNeutralTopic"] = daily_topics[d_str]
-            timeline_dict[d_str]["topNegativeTopic"] = daily_topics[d_str]
 
-    return list(timeline_dict.values())
+        sentiment_key = (sentiment_label or "neutral").lower()
+        count_int = int(post_count or 0)
+        if sentiment_key in ("positive", "neutral", "negative"):
+            timeline_by_date[date_string][sentiment_key] += count_int
+        else:
+            timeline_by_date[date_string]["neutral"] += count_int
+        timeline_by_date[date_string]["total"] += count_int
+
+    return list(timeline_by_date.values())

@@ -1,8 +1,12 @@
-// Service API Resmi untuk sinkronisasi Frontend dengan Backend FastAPI (PostgreSQL & Neo4J)
 import mbgGraphFallback from './mbgGraphFallback.json';
 
 const rawBaseUrl = (import.meta.env.VITE_API_BASE_URL || 'http://localhost:8000/api').replace(/\/+$/, '');
 export const API_BASE_URL = rawBaseUrl.endsWith('/api') ? rawBaseUrl : `${rawBaseUrl}/api`;
+
+const DEFAULT_POST_LIMIT = 50;
+const DEFAULT_TOP_ITEMS_LIMIT = 4;
+const TOPIC_NODE_DEFAULT_WEIGHT = 40;
+const PERCENTAGE_MULTIPLIER = 100;
 
 export interface SocialPost {
   id: string | number;
@@ -87,49 +91,352 @@ export interface DashboardOverviewData {
   engagementGrowth?: number;
 }
 
+export async function fetchDashboardOverviewFromApi(params?: {
+  platform?: string;
+  timeFilter?: string;
+  date?: string | null;
+}): Promise<DashboardOverviewData | null> {
+  const queryString = buildTimeAndPlatformQuery({
+    platform: params?.platform,
+    timeFilter: params?.timeFilter || 'all',
+    date: params?.date,
+  });
+
+  const [overviewResult, distributionResult] = await Promise.allSettled([
+    fetch(`${API_BASE_URL}/dashboard/overview${queryString}`, {
+      method: 'GET',
+      headers: getAuthHeaders(),
+    }),
+    fetch(`${API_BASE_URL}/sentiment/distribution${queryString}`, {
+      method: 'GET',
+      headers: getAuthHeaders(),
+    }),
+  ]);
+
+  const overviewRaw = await extractSettledJson(overviewResult);
+  const distributionRaw = await extractSettledJson(distributionResult);
+
+  if (!overviewRaw && !distributionRaw) {
+    return null;
+  }
+
+  return buildDashboardOverviewData(overviewRaw, distributionRaw, params?.platform);
+}
+
+export async function fetchCombinedPlatformDistributionFromApi(params?: {
+  timeFilter?: string;
+}): Promise<PlatformDistribution | null> {
+  const timeFilterValue = params?.timeFilter || 'all';
+
+  const directDistribution = await fetchGlobalPlatformDistribution(timeFilterValue);
+  if (directDistribution) {
+    return directDistribution;
+  }
+
+  return await fetchParallelPlatformDistribution(timeFilterValue);
+}
+
+export async function fetchSentimentTimelineFromApi(params?: {
+  platform?: string;
+  timeFilter?: string;
+}): Promise<TimelinePoint[]> {
+  const queryString = buildTimeAndPlatformQuery({
+    platform: params?.platform,
+    timeFilter: params?.timeFilter || 'all',
+  });
+
+  const candidateEndpoints = [
+    `${API_BASE_URL}/sentiment/timeline${queryString}`,
+    `${API_BASE_URL}/dashboard/timeline${queryString}`,
+  ];
+
+  const payload = await fetchFirstAvailableJson(candidateEndpoints);
+  const rawList = extractListFromPayload(payload, ['data', 'timeline', 'items']);
+  if (!rawList || rawList.length === 0) {
+    return [];
+  }
+
+  return rawList.map(mapRawRowToTimelinePoint);
+}
+
+export async function fetchEntitiesFromApi(params?: {
+  platform?: string;
+  timeFilter?: string;
+  date?: string | null;
+  limit?: number;
+}): Promise<EntityItem[]> {
+  const itemLimit = params?.limit ?? DEFAULT_TOP_ITEMS_LIMIT;
+  const queryString = buildTimeAndPlatformQuery({
+    platform: params?.platform,
+    timeFilter: params?.timeFilter,
+    date: params?.date,
+    limit: itemLimit,
+  });
+
+  const candidateEndpoints = [
+    `${API_BASE_URL}/entities?limit=${itemLimit}`,
+    `${API_BASE_URL}/entities${queryString}`,
+    `${API_BASE_URL}/graph/nodes?limit=${itemLimit}`,
+  ];
+
+  const payload = await fetchFirstAvailableJson(candidateEndpoints);
+  const rawList = extractListFromPayload(payload, ['data', 'entities', 'nodes', 'items']);
+  if (!rawList || rawList.length === 0) {
+    return [];
+  }
+
+  const nonTopicRows = rawList.filter((item: any) => {
+    const recordData = item.data ? item.data : item;
+    const rawType = String(recordData.type || recordData.entity_type || '').toLowerCase();
+    return rawType !== 'topic';
+  });
+
+  const rowsToNormalize = nonTopicRows.length > 0 ? nonTopicRows : rawList;
+  return rowsToNormalize
+    .map((row: any, index: number) => normalizeEntityRecord(row, index))
+    .sort((first: EntityItem, second: EntityItem) => second.mentionCount - first.mentionCount)
+    .slice(0, itemLimit)
+    .map((item: EntityItem, index: number) => ({ ...item, rank: index + 1 }));
+}
+
+export async function fetchTopicsFromApi(params?: {
+  platform?: string;
+  timeFilter?: string;
+  date?: string | null;
+  limit?: number;
+}): Promise<TopicItem[]> {
+  const itemLimit = params?.limit ?? DEFAULT_TOP_ITEMS_LIMIT;
+  const queryString = buildTimeAndPlatformQuery({
+    platform: params?.platform,
+    timeFilter: params?.timeFilter || 'all',
+    date: params?.date,
+    limit: itemLimit,
+  });
+
+  const candidateEndpoints = [
+    `${API_BASE_URL}/topics${queryString}`,
+    `${API_BASE_URL}/topics?limit=${itemLimit}`,
+  ];
+
+  const payload = await fetchFirstAvailableJson(candidateEndpoints);
+  const rawList = extractListFromPayload(payload, ['data', 'topics', 'items']);
+  if (!rawList || rawList.length === 0) {
+    return [];
+  }
+
+  return rawList.slice(0, itemLimit).map(normalizeTopicRecord);
+}
+
+export async function fetchPostsFromApi(params?: {
+  platform?: string;
+  timeFilter?: string;
+  limit?: number;
+}): Promise<SocialPost[]> {
+  const queryString = buildTimeAndPlatformQuery({
+    platform: params?.platform,
+    timeFilter: params?.timeFilter || 'all',
+    limit: params?.limit ?? DEFAULT_POST_LIMIT,
+  });
+
+  const candidateEndpoints = [
+    `${API_BASE_URL}/sentiment/posts${queryString}`,
+    `${API_BASE_URL}/posts${queryString}`,
+  ];
+
+  let lastError: Error | null = null;
+
+  for (const endpointUrl of candidateEndpoints) {
+    try {
+      const response = await fetch(endpointUrl, {
+        method: 'GET',
+        headers: getAuthHeaders(),
+      });
+
+      if (!response.ok) {
+        lastError = new Error(`HTTP ${response.status} pada ${endpointUrl}`);
+        continue;
+      }
+
+      const payload = await response.json();
+      const rawList = extractListFromPayload(payload, ['data', 'posts', 'items', 'results']);
+      if (rawList) {
+        return rawList.map(normalizePostRecord);
+      }
+    } catch (error: any) {
+      lastError = error instanceof Error ? error : new Error(String(error));
+    }
+  }
+
+  throw lastError || new Error('Gagal mengambil data posts dari FastAPI');
+}
+
+export async function fetchKnowledgeGraphFromApi(params?: {
+  platform?: string;
+  timeFilter?: string;
+  entityType?: string;
+  minFreq?: string | number;
+  topic?: string | null;
+}): Promise<{ nodes: any[]; edges: any[] } | null> {
+  try {
+    const queryString = buildTimeAndPlatformQuery({
+      platform: params?.platform,
+      timeFilter: params?.timeFilter,
+      minFreq: params?.minFreq ?? 0,
+      entityType: params?.entityType,
+      topic: params?.topic,
+    });
+
+    const response = await fetch(`${API_BASE_URL}/graph/data${queryString}`, {
+      method: 'GET',
+      headers: getAuthHeaders(),
+    });
+
+    if (!response.ok) {
+      return buildMbgFallbackGraph();
+    }
+
+    const payload = await response.json();
+    return parseLiveGraphPayload(payload);
+  } catch {
+    return buildMbgFallbackGraph();
+  }
+}
+
+export function buildMbgFallbackGraph(): { nodes: any[]; edges: any[] } {
+  const nodes: any[] = [];
+  const edges: any[] = [];
+  const nodeIds = new Set<string>();
+
+  (mbgGraphFallback.topics || []).forEach((topicName: string) => {
+    const topicNodeId = `topic_${topicName}`;
+    nodeIds.add(topicNodeId);
+    nodes.push({
+      data: {
+        id: topicNodeId,
+        label: topicName,
+        type: 'topic',
+        weight: TOPIC_NODE_DEFAULT_WEIGHT,
+      },
+    });
+  });
+
+  (mbgGraphFallback.entities || []).forEach((entityItem: any) => {
+    const entityName = String(entityItem.name).trim();
+    const entityNodeId = `entity_${entityName}`;
+    const topicName = String(entityItem.topic || '').trim();
+    const topicNodeId = `topic_${topicName}`;
+
+    nodeIds.add(entityNodeId);
+    nodes.push({
+      data: {
+        id: entityNodeId,
+        label: entityName,
+        type: normalizeEntityType(entityItem.type),
+        weight: Number(entityItem.mention_count || 1),
+        topic: topicName,
+      },
+    });
+
+    if (topicName && nodeIds.has(topicNodeId)) {
+      edges.push(createBelongsToTopicCytoscapeEdge(entityName, topicName, entityNodeId, topicNodeId));
+    }
+  });
+
+  appendCoOccurrenceFallbackEdges(edges, nodeIds);
+  return { nodes, edges };
+}
+
+export async function loginWithFastApi(emailOrUsername: string, password: string) {
+  const response = await fetch(`${API_BASE_URL}/auth/login`, {
+    method: 'POST',
+    headers: {
+      'Content-Type': 'application/json',
+      Accept: 'application/json',
+    },
+    body: JSON.stringify({
+      username: emailOrUsername,
+      email: emailOrUsername,
+      password,
+    }),
+  });
+
+  if (!response.ok) {
+    const errorBody = await response.json().catch(() => ({}));
+    throw new Error(errorBody?.detail || errorBody?.message || 'Email/username atau kata sandi salah.');
+  }
+
+  const responseData = await response.json();
+  if (responseData?.access_token || responseData?.token) {
+    localStorage.setItem('access_token', responseData.access_token || responseData.token);
+  }
+  return responseData;
+}
+
+export async function logoutFromFastApi() {
+  try {
+    await fetch(`${API_BASE_URL}/auth/logout`, {
+      method: 'POST',
+      headers: getAuthHeaders(),
+    });
+  } catch {
+    // Ignore network errors during logout cleanup
+  } finally {
+    localStorage.removeItem('access_token');
+  }
+}
+
 export function normalizeEntityType(type?: string): string {
-  if (!type) return 'topic';
-  const lower = type.toLowerCase().trim();
-  if (lower === 'person' || lower === 'per') return 'person';
-  if (lower === 'organization' || lower === 'org') return 'organization';
-  if (lower === 'geopolitical' || lower === 'gpe') return 'geopolitical';
-  if (lower === 'location' || lower === 'loc') return 'location';
-  if (lower === 'product' || lower === 'prd') return 'product';
-  if (lower === 'event' || lower === 'evt') return 'event';
-  if (lower === 'norm' || lower === 'nor') return 'norm';
-  if (lower === 'facility' || lower === 'fac') return 'facility';
-  if (lower === 'topic') return 'topic';
-  return lower;
+  if (!type) {
+    return 'topic';
+  }
+  const lowerType = type.toLowerCase().trim();
+  if (lowerType === 'person' || lowerType === 'per') {
+    return 'person';
+  }
+  if (lowerType === 'organization' || lowerType === 'org') {
+    return 'organization';
+  }
+  if (lowerType === 'geopolitical' || lowerType === 'gpe') {
+    return 'geopolitical';
+  }
+  if (lowerType === 'location' || lowerType === 'loc') {
+    return 'location';
+  }
+  if (lowerType === 'product' || lowerType === 'prd') {
+    return 'product';
+  }
+  if (lowerType === 'event' || lowerType === 'evt') {
+    return 'event';
+  }
+  if (lowerType === 'norm' || lowerType === 'nor') {
+    return 'norm';
+  }
+  if (lowerType === 'facility' || lowerType === 'fac') {
+    return 'facility';
+  }
+  if (lowerType === 'topic') {
+    return 'topic';
+  }
+  return lowerType;
 }
 
 export function normalizePlatform(platform?: string): string {
-  if (!platform) return 'instagram';
-  const lower = platform.toLowerCase();
-  if (lower === 'twitter' || lower === 'x') return 'x';
-  if (lower === 'instagram' || lower === 'ig') return 'instagram';
-  if (lower === 'tiktok') return 'tiktok';
-  return lower;
-}
-
-function getAuthHeaders(): HeadersInit {
-  const token = localStorage.getItem('access_token');
-  const headers: Record<string, string> = {
-    'Content-Type': 'application/json',
-    Accept: 'application/json'
-  };
-  if (token) {
-    headers['Authorization'] = `Bearer ${token}`;
+  if (!platform) {
+    return 'instagram';
   }
-  return headers;
+  const lowerPlatform = platform.toLowerCase();
+  if (lowerPlatform === 'twitter' || lowerPlatform === 'x') {
+    return 'x';
+  }
+  if (lowerPlatform === 'instagram' || lowerPlatform === 'ig') {
+    return 'instagram';
+  }
+  if (lowerPlatform === 'tiktok') {
+    return 'tiktok';
+  }
+  return lowerPlatform;
 }
 
-/**
- * 1. Builder Query Parameter sesuai kontrak Backend:
- *    - 'last7' / '7_hari' -> days=7 & time_filter=last7
- *    - 'last14' / '14_hari' -> days=14 & time_filter=last14
- *    - 'last30' / '30_hari' -> days=30 & time_filter=last30
- *    - 'all' / 'sepanjang_waktu' -> HANYA time_filter=all (tanpa days)
- */
 export function buildTimeAndPlatformQuery(params?: {
   platform?: string;
   timeFilter?: string;
@@ -139,79 +446,91 @@ export function buildTimeAndPlatformQuery(params?: {
   topic?: string | null;
   date?: string | null;
 }): string {
-  const query = new URLSearchParams();
+  const queryParams = new URLSearchParams();
 
   if (params?.platform && params.platform !== 'all') {
-    query.set('platform', params.platform.toLowerCase());
+    queryParams.set('platform', params.platform.toLowerCase());
   }
 
   if (params?.timeFilter) {
-    const tf = params.timeFilter;
-    if (tf === 'last7' || tf === '7_hari') {
-      query.set('days', '7');
-      query.set('time_filter', 'last7');
-    } else if (tf === 'last14' || tf === '14_hari') {
-      query.set('days', '14');
-      query.set('time_filter', 'last14');
-    } else if (tf === 'last30' || tf === '30_hari') {
-      query.set('days', '30');
-      query.set('time_filter', 'last30');
+    const timeFilterValue = params.timeFilter;
+    if (timeFilterValue === 'last7' || timeFilterValue === '7_hari') {
+      queryParams.set('days', '7');
+      queryParams.set('time_filter', 'last7');
+    } else if (timeFilterValue === 'last14' || timeFilterValue === '14_hari') {
+      queryParams.set('days', '14');
+      queryParams.set('time_filter', 'last14');
+    } else if (timeFilterValue === 'last30' || timeFilterValue === '30_hari') {
+      queryParams.set('days', '30');
+      queryParams.set('time_filter', 'last30');
     } else {
-      // Untuk 'all' / 'sepanjang_waktu', cukup kirim time_filter=all (JANGAN kirim days)
-      query.set('time_filter', 'all');
+      queryParams.set('time_filter', 'all');
     }
   }
 
   if (params?.limit !== undefined) {
-    query.set('limit', String(params.limit));
+    queryParams.set('limit', String(params.limit));
   }
   if (params?.minFreq !== undefined) {
-    query.set('min_freq', String(params.minFreq));
+    queryParams.set('min_freq', String(params.minFreq));
   }
   if (params?.entityType && params.entityType !== 'All') {
-    query.set('entity_type', params.entityType.toLowerCase());
+    queryParams.set('entity_type', params.entityType.toLowerCase());
   }
   if (params?.topic) {
-    query.set('topic', params.topic);
+    queryParams.set('topic', params.topic);
   }
   if (params?.date) {
-    query.set('date', params.date);
+    queryParams.set('date', params.date);
   }
 
-  const str = query.toString();
-  return str ? `?${str}` : '';
+  const serializedQuery = queryParams.toString();
+  return serializedQuery ? `?${serializedQuery}` : '';
 }
 
 export function normalizePostRecord(row: any): SocialPost {
   const rawEntities = Array.isArray(row.entities) ? row.entities : [];
   const normalizedEntities = rawEntities
-    .map((ent: any) => {
-      if (typeof ent === 'string') {
-        return { name: ent, type: 'Topic' };
+    .map((entityEntry: any) => {
+      if (typeof entityEntry === 'string') {
+        return { name: entityEntry, type: 'Topic' };
       }
       return {
-        name: ent.name || ent.entity_name || '',
-        type: normalizeEntityType(ent.type || ent.entity_type)
+        name: entityEntry.name || entityEntry.entity_name || '',
+        type: normalizeEntityType(entityEntry.type || entityEntry.entity_type),
       };
     })
-    .filter((e: any) => Boolean(e.name));
+    .filter((entityEntry: any) => Boolean(entityEntry.name));
 
   if (Array.isArray(row.hashtags)) {
-    const existingNames = new Set(normalizedEntities.map((e: any) => e.name.toLowerCase()));
-    row.hashtags.forEach((tag: string) => {
-      const cleanTag = String(tag).replace(/^#/, '').trim();
-      if (cleanTag && !existingNames.has(cleanTag.toLowerCase())) {
-        existingNames.add(cleanTag.toLowerCase());
-        normalizedEntities.push({ name: cleanTag, type: 'Topic' });
+    const existingEntityNames = new Set(
+      normalizedEntities.map((entityEntry: any) => entityEntry.name.toLowerCase())
+    );
+    row.hashtags.forEach((hashtag: string) => {
+      const cleanHashtag = String(hashtag).replace(/^#/, '').trim();
+      if (cleanHashtag && !existingEntityNames.has(cleanHashtag.toLowerCase())) {
+        existingEntityNames.add(cleanHashtag.toLowerCase());
+        normalizedEntities.push({ name: cleanHashtag, type: 'Topic' });
       }
     });
   }
 
   const engagement = {
     likes: Number(row.engagement?.likes ?? row.likes ?? row.like_count ?? 0),
-    shares: Number(row.engagement?.shares ?? row.shares ?? row.retweets ?? row.reposts ?? row.retweet_count ?? 0),
-    comments: Number(row.engagement?.comments ?? row.comments ?? row.replies ?? row.reply_count ?? 0),
-    views: Number(row.engagement?.views ?? row.views ?? row.impressions ?? row.view_count ?? 0)
+    shares: Number(
+      row.engagement?.shares ??
+        row.shares ??
+        row.retweets ??
+        row.reposts ??
+        row.retweet_count ??
+        0
+    ),
+    comments: Number(
+      row.engagement?.comments ?? row.comments ?? row.replies ?? row.reply_count ?? 0
+    ),
+    views: Number(
+      row.engagement?.views ?? row.views ?? row.impressions ?? row.view_count ?? 0
+    ),
   };
 
   const topicName =
@@ -221,853 +540,746 @@ export function normalizePostRecord(row: any): SocialPost {
     (row.topic_id ? `Topik #${row.topic_id}` : '');
 
   const rawSentiment = String(row.sentiment || 'neutral').toLowerCase();
-  const sentiment: 'positive' | 'negative' | 'neutral' =
-    rawSentiment === 'positive' || rawSentiment === 'positif'
-      ? 'positive'
-      : rawSentiment === 'negative' || rawSentiment === 'negatif'
-      ? 'negative'
-      : 'neutral';
+  let sentiment: 'positive' | 'negative' | 'neutral' = 'neutral';
+  if (rawSentiment === 'positive' || rawSentiment === 'positif') {
+    sentiment = 'positive';
+  } else if (rawSentiment === 'negative' || rawSentiment === 'negatif') {
+    sentiment = 'negative';
+  }
 
   return {
     id: row.id ?? row.platform_post_id ?? Math.random().toString(36).slice(2),
     platform: normalizePlatform(row.platform),
-    user_id: row.author_username || row.user_id || row.username || row.screen_name || row.author || '@anonymous',
+    user_id:
+      row.author_username ||
+      row.user_id ||
+      row.username ||
+      row.screen_name ||
+      row.author ||
+      '@anonymous',
     topic: String(topicName),
     topic_id: row.topic_id,
     content: String(row.content || row.text || row.full_text || ''),
     sentiment,
-    sentiment_score: row.sentiment_score !== undefined ? Number(row.sentiment_score) : undefined,
+    sentiment_score:
+      row.sentiment_score !== undefined ? Number(row.sentiment_score) : undefined,
     entities: normalizedEntities,
     engagement,
     hashtags: Array.isArray(row.hashtags) ? row.hashtags : undefined,
-    timestamp: row.posted_at || row.timestamp || row.scraped_at || row.created_at || new Date().toISOString()
+    timestamp:
+      row.posted_at ||
+      row.timestamp ||
+      row.scraped_at ||
+      row.created_at ||
+      new Date().toISOString(),
   };
 }
 
 export function normalizeTopicRecord(row: any, index: number): TopicItem {
-  const count = Number(row.post_count ?? row.count ?? row.total_posts ?? row.posts_count ?? row.mentions ?? 0);
+  const postCount = Number(
+    row.post_count ?? row.count ?? row.total_posts ?? row.posts_count ?? row.mentions ?? 0
+  );
   const rawGrowth = row.growth ?? row.growth_rate ?? row.percentage_change ?? row.share;
-  const growthStr =
+  const growthLabel =
     rawGrowth !== undefined && rawGrowth !== null
       ? typeof rawGrowth === 'number'
         ? `${rawGrowth >= 0 ? '+' : ''}${rawGrowth.toFixed(1)}%`
         : String(rawGrowth)
-      : `${count.toLocaleString('id-ID')} post`;
+      : `${postCount.toLocaleString('id-ID')} post`;
 
   return {
     id: row.id ?? row.topic_id ?? index + 1,
     rank: Number(row.rank ?? index + 1),
     title: String(row.name ?? row.title ?? row.topic ?? row.label ?? `Topik #${index + 1}`),
-    postCount: count,
-    posts: typeof row.posts === 'string' ? row.posts : `${count.toLocaleString('id-ID')} postingan`,
-    growth: growthStr,
-    sentiment: row.sentiment || row.dominant_sentiment
+    postCount,
+    posts:
+      typeof row.posts === 'string'
+        ? row.posts
+        : `${postCount.toLocaleString('id-ID')} postingan`,
+    growth: growthLabel,
+    sentiment: row.sentiment || row.dominant_sentiment,
   };
 }
 
 export function normalizeEntityRecord(row: any, index: number): EntityItem {
-  const d = row.data ? row.data : row;
-  const count = Number(d.mention_count ?? d.mentions_count ?? d.count ?? d.weight ?? d.mentions ?? 0);
+  const recordData = row.data ? row.data : row;
+  const mentionCount = Number(
+    recordData.mention_count ??
+      recordData.mentions_count ??
+      recordData.count ??
+      recordData.weight ??
+      recordData.mentions ??
+      0
+  );
+
   return {
-    id: d.id ?? d.entity_id ?? index + 1,
-    rank: Number(d.rank ?? index + 1),
-    name: String(d.name ?? d.label ?? d.entity_name ?? `Entitas #${index + 1}`),
-    type: normalizeEntityType(d.type ?? d.entity_type ?? d.group),
-    mentionCount: count,
-    mentions: typeof d.mentions === 'string' ? d.mentions : `${count.toLocaleString('id-ID')} sebutan`
+    id: recordData.id ?? recordData.entity_id ?? index + 1,
+    rank: Number(recordData.rank ?? index + 1),
+    name: String(
+      recordData.name ?? recordData.label ?? recordData.entity_name ?? `Entitas #${index + 1}`
+    ),
+    type: normalizeEntityType(recordData.type ?? recordData.entity_type ?? recordData.group),
+    mentionCount,
+    mentions:
+      typeof recordData.mentions === 'string'
+        ? recordData.mentions
+        : `${mentionCount.toLocaleString('id-ID')} sebutan`,
   };
 }
 
-/**
- * Kontrak 1 & 3:
- * - GET /api/dashboard/overview?platform=instagram&time_filter=all
- * - GET /api/sentiment/distribution?platform=instagram&time_filter=all
- */
-export async function fetchDashboardOverviewFromApi(params?: {
-  platform?: string;
-  timeFilter?: string;
-  date?: string | null;
-}): Promise<DashboardOverviewData | null> {
-  const qs = buildTimeAndPlatformQuery({
-    platform: params?.platform,
-    timeFilter: params?.timeFilter || 'all',
-    date: params?.date
-  });
+function buildDashboardOverviewData(
+  overviewRaw: any,
+  distributionRaw: any,
+  activePlatform?: string
+): DashboardOverviewData {
+  const overviewData =
+    overviewRaw?.data && !overviewRaw?.total_posts && !overviewRaw?.kpi
+      ? overviewRaw.data
+      : overviewRaw || {};
+  const kpiData = overviewData.kpi || {};
+  const sentimentData =
+    distributionRaw?.data && !distributionRaw?.positive && !distributionRaw?.neutral_share
+      ? distributionRaw.data
+      : distributionRaw || {};
 
-  const [overviewRes, distRes] = await Promise.allSettled([
-    fetch(`${API_BASE_URL}/dashboard/overview${qs}`, { method: 'GET', headers: getAuthHeaders() }),
-    fetch(`${API_BASE_URL}/sentiment/distribution${qs}`, { method: 'GET', headers: getAuthHeaders() })
-  ]);
-
-  let overviewRaw: any = null;
-  let distRaw: any = null;
-
-  if (overviewRes.status === 'fulfilled' && overviewRes.value.ok) {
-    overviewRaw = await overviewRes.value.json().catch(() => null);
-  }
-  if (distRes.status === 'fulfilled' && distRes.value.ok) {
-    distRaw = await distRes.value.json().catch(() => null);
-  }
-
-  if (!overviewRaw && !distRaw) {
-    return null;
-  }
-
-  // Sesuai instruksi Backend: baca dari level teratas maupun di dalam objek `kpi` atau `data`
-  const data = overviewRaw?.data && !overviewRaw?.total_posts && !overviewRaw?.kpi ? overviewRaw.data : (overviewRaw || {});
-  const kpi = data.kpi || {};
-  const sd = distRaw?.data && !distRaw?.positive && !distRaw?.neutral_share ? distRaw.data : (distRaw || {});
-
-  const totalPosts = Number(data.total_posts ?? kpi.total_posts ?? sd.total_posts ?? 0);
-  const totalEngagement = Number(data.total_engagement ?? kpi.total_engagement ?? 0);
+  const totalPosts = Number(
+    overviewData.total_posts ?? kpiData.total_posts ?? sentimentData.total_posts ?? 0
+  );
+  const totalEngagement = Number(
+    overviewData.total_engagement ?? kpiData.total_engagement ?? 0
+  );
   const uniqueEntitiesCount = Number(
-    data.unique_entities ?? kpi.unique_entities ?? data.unique_entities_count ?? kpi.unique_entities_count ?? 0
+    overviewData.unique_entities ??
+      kpiData.unique_entities ??
+      overviewData.unique_entities_count ??
+      kpiData.unique_entities_count ??
+      0
   );
   const trendingTopicsCount = Number(
-    data.trending_topics ?? kpi.trending_topics ?? data.trending_topics_count ?? kpi.trending_topics_count ?? 0
+    overviewData.trending_topics ??
+      kpiData.trending_topics ??
+      overviewData.trending_topics_count ??
+      kpiData.trending_topics_count ??
+      0
   );
 
-  // Sentimen counts & shares dari overview maupun sentiment/distribution
-  const sentObj = data.sentiment || data.sentiment_distribution || sd.sentiment || sd.distribution || sd;
-
-  const positiveCount = Number(
-    data.positive_count ?? kpi.positive_count ?? sentObj?.positive?.count ?? (typeof sentObj?.positive === 'number' ? sentObj.positive : 0)
-  );
-  const negativeCount = Number(
-    data.negative_count ?? kpi.negative_count ?? sentObj?.negative?.count ?? (typeof sentObj?.negative === 'number' ? sentObj.negative : 0)
-  );
-  const neutralCount = Number(
-    data.neutral_count ?? kpi.neutral_count ?? sentObj?.neutral?.count ?? (typeof sentObj?.neutral === 'number' ? sentObj.neutral : 0)
+  const sentimentSummary = extractSentimentCountsAndShares(overviewData, kpiData, sentimentData);
+  const dominantSentiment = resolveDominantSentimentLabel(
+    overviewData,
+    sentimentData,
+    sentimentSummary
   );
 
-  const sumSentCounts = positiveCount + negativeCount + neutralCount;
+  const rawPlatformDistribution =
+    overviewData.platform_distribution ||
+    overviewData.platforms ||
+    kpiData.platform_distribution ||
+    sentimentData.platform_distribution ||
+    sentimentData.platforms ||
+    sentimentData.by_platform;
 
-  const positiveShare = Number(
-    data.positive_share ??
-      kpi.positive_share ??
-      sd.positive_share ??
-      sentObj?.positive?.percentage ??
-      sentObj?.positive_pct ??
-      (sumSentCounts > 0 ? ((positiveCount / sumSentCounts) * 100).toFixed(1) : 0)
+  const platformDistribution = parsePlatformDistributionPayload(
+    rawPlatformDistribution,
+    totalPosts,
+    activePlatform
   );
 
-  const negativeShare = Number(
-    data.negative_share ??
-      kpi.negative_share ??
-      sd.negative_share ??
-      sentObj?.negative?.percentage ??
-      sentObj?.negative_pct ??
-      (sumSentCounts > 0 ? ((negativeCount / sumSentCounts) * 100).toFixed(1) : 0)
-  );
-
-  const neutralShare = Number(
-    data.neutral_share ??
-      kpi.neutral_share ??
-      sd.neutral_share ??
-      sentObj?.neutral?.percentage ??
-      sentObj?.neutral_pct ??
-      (sumSentCounts > 0 ? ((neutralCount / sumSentCounts) * 100).toFixed(1) : 0)
-  );
-
-  // Tentukan sentimen dominan berdasarkan persentase riil dari database
-  let dominantSentiment: 'positive' | 'negative' | 'neutral' = 'neutral';
-  if (data.dominant_sentiment || sd.dominant_sentiment) {
-    const domRaw = String(data.dominant_sentiment || sd.dominant_sentiment).toLowerCase();
-    if (domRaw.includes('pos')) dominantSentiment = 'positive';
-    else if (domRaw.includes('neg')) dominantSentiment = 'negative';
-    else dominantSentiment = 'neutral';
-  } else {
-    if (positiveShare > neutralShare && positiveShare > negativeShare) dominantSentiment = 'positive';
-    else if (negativeShare > neutralShare && negativeShare > positiveShare) dominantSentiment = 'negative';
-    else dominantSentiment = 'neutral';
-  }
-
-  // Platform Distribution dari overview / distribution
-  let platformDistribution: PlatformDistribution | undefined = undefined;
-  const rawPlat =
-    data.platform_distribution ||
-    data.platforms ||
-    kpi.platform_distribution ||
-    sd.platform_distribution ||
-    sd.platforms ||
-    sd.by_platform;
-
-  if (rawPlat) {
-    let igPosts = 0;
-    let xPosts = 0;
-    let igPerc: number | undefined;
-    let xPerc: number | undefined;
-
-    if (Array.isArray(rawPlat)) {
-      rawPlat.forEach((p: any) => {
-        const name = String(p.platform || p.name || '').toLowerCase();
-        const count = Number(p.count ?? p.posts ?? p.post_count ?? p.total ?? 0);
-        const perc = p.percentage ?? p.share;
-        if (name === 'instagram' || name === 'ig') {
-          igPosts += count;
-          if (perc !== undefined) igPerc = Number(perc);
-        } else if (name === 'twitter' || name === 'x') {
-          xPosts += count;
-          if (perc !== undefined) xPerc = Number(perc);
-        }
-      });
-    } else if (typeof rawPlat === 'object') {
-      const igObj = rawPlat.instagram ?? rawPlat.Instagram ?? rawPlat.ig;
-      const xObj = rawPlat.x ?? rawPlat.X ?? rawPlat.twitter ?? rawPlat.Twitter;
-      igPosts = typeof igObj === 'number' ? igObj : Number(igObj?.posts ?? igObj?.count ?? igObj?.post_count ?? igObj?.total ?? 0);
-      xPosts = typeof xObj === 'number' ? xObj : Number(xObj?.posts ?? xObj?.count ?? xObj?.post_count ?? xObj?.total ?? 0);
-      if (typeof igObj === 'object' && (igObj?.percentage !== undefined || igObj?.share !== undefined)) {
-        igPerc = Number(igObj.percentage ?? igObj.share);
-      }
-      if (typeof xObj === 'object' && (xObj?.percentage !== undefined || xObj?.share !== undefined)) {
-        xPerc = Number(xObj.percentage ?? xObj.share);
-      }
-    }
-
-    const totalP = igPosts + xPosts;
-    const finalIgPerc = igPerc !== undefined ? Math.round(igPerc) : totalP > 0 ? Math.round((igPosts / totalP) * 100) : 0;
-    const finalXPerc = xPerc !== undefined ? Math.round(xPerc) : totalP > 0 ? Math.max(0, 100 - finalIgPerc) : 0;
-
-    let resolvedIgPosts = igPosts;
-    let resolvedXPosts = xPosts;
-    // Jika posts masih merupakan sample count (misal <= 50 atau < totalPosts), sinkronkan dengan totalPosts
-    if (totalPosts > 0 && (resolvedIgPosts + resolvedXPosts < totalPosts || resolvedIgPosts + resolvedXPosts <= 50)) {
-      resolvedIgPosts = Math.round((finalIgPerc / 100) * totalPosts);
-      resolvedXPosts = Math.max(0, totalPosts - resolvedIgPosts);
-    }
-
-    platformDistribution = {
-      instagram: { percentage: finalIgPerc, posts: resolvedIgPosts },
-      x: { percentage: finalXPerc, posts: resolvedXPosts }
-    };
-  } else if (totalPosts > 0) {
-    const isX = params?.platform?.toLowerCase() === 'x' || params?.platform?.toLowerCase() === 'twitter';
-    platformDistribution = {
-      instagram: { percentage: isX ? 0 : 100, posts: isX ? 0 : totalPosts },
-      x: { percentage: isX ? 100 : 0, posts: isX ? totalPosts : 0 }
-    };
-  }
-
-  const topTopicsRaw = data.top_topics || data.trending_topics_list || (Array.isArray(data.topics) ? data.topics : null);
-  const topEntitiesRaw = data.top_entities || data.most_mentioned_entities || (Array.isArray(data.entities) ? data.entities : null);
+  const topTopicsRaw =
+    overviewData.top_topics ||
+    overviewData.trending_topics_list ||
+    (Array.isArray(overviewData.topics) ? overviewData.topics : null);
+  const topEntitiesRaw =
+    overviewData.top_entities ||
+    overviewData.most_mentioned_entities ||
+    (Array.isArray(overviewData.entities) ? overviewData.entities : null);
 
   return {
     totalPosts,
     totalEngagement,
     trendingTopicsCount,
     uniqueEntitiesCount,
+    positiveCount: sentimentSummary.positiveCount,
+    negativeCount: sentimentSummary.negativeCount,
+    neutralCount: sentimentSummary.neutralCount,
+    positiveShare: sentimentSummary.positiveShare,
+    negativeShare: sentimentSummary.negativeShare,
+    neutralShare: sentimentSummary.neutralShare,
+    avgConfidence: Number(
+      overviewData.avg_confidence ?? kpiData.avg_confidence ?? sentimentData.avg_confidence ?? 0
+    ),
+    dominantSentiment,
+    topPositiveTopic:
+      overviewData.top_positive_topic || overviewData.peak_topic || overviewData.top_topic,
+    topNegativeTopic: overviewData.top_negative_topic,
+    topNeutralTopic: overviewData.top_neutral_topic || overviewData.top_topic,
+    dominantTopic:
+      overviewData.dominant_topic || overviewData.top_topic || overviewData.main_topic,
+    narrativeSummary:
+      overviewData.narrative_summary || overviewData.summary || overviewData.description,
+    peakDateStr: overviewData.peak_date || overviewData.peak_date_str,
+    platformDistribution,
+    keyInsights: Array.isArray(overviewData.key_insights || overviewData.insights)
+      ? overviewData.key_insights || overviewData.insights
+      : undefined,
+    topTopics: Array.isArray(topTopicsRaw) ? topTopicsRaw.map(normalizeTopicRecord) : undefined,
+    topEntities: Array.isArray(topEntitiesRaw)
+      ? topEntitiesRaw.map(normalizeEntityRecord)
+      : undefined,
+    postsGrowth:
+      overviewData.posts_growth !== undefined && overviewData.posts_growth !== null
+        ? Number(overviewData.posts_growth)
+        : kpiData.posts_growth !== undefined && kpiData.posts_growth !== null
+          ? Number(kpiData.posts_growth)
+          : undefined,
+    engagementGrowth:
+      overviewData.engagement_growth !== undefined && overviewData.engagement_growth !== null
+        ? Number(overviewData.engagement_growth)
+        : kpiData.engagement_growth !== undefined && kpiData.engagement_growth !== null
+          ? Number(kpiData.engagement_growth)
+          : undefined,
+  };
+}
+
+function extractSentimentCountsAndShares(
+  overviewData: any,
+  kpiData: any,
+  sentimentData: any
+) {
+  const sentimentObject =
+    overviewData.sentiment ||
+    overviewData.sentiment_distribution ||
+    sentimentData.sentiment ||
+    sentimentData.distribution ||
+    sentimentData;
+
+  const positiveCount = Number(
+    overviewData.positive_count ??
+      kpiData.positive_count ??
+      sentimentObject?.counts?.positive ??
+      sentimentObject?.positive?.count ??
+      (typeof sentimentObject?.positive === 'number' ? sentimentObject.positive : 0)
+  );
+  const negativeCount = Number(
+    overviewData.negative_count ??
+      kpiData.negative_count ??
+      sentimentObject?.counts?.negative ??
+      sentimentObject?.negative?.count ??
+      (typeof sentimentObject?.negative === 'number' ? sentimentObject.negative : 0)
+  );
+  const neutralCount = Number(
+    overviewData.neutral_count ??
+      kpiData.neutral_count ??
+      sentimentObject?.counts?.neutral ??
+      sentimentObject?.neutral?.count ??
+      (typeof sentimentObject?.neutral === 'number' ? sentimentObject.neutral : 0)
+  );
+
+  const totalSentimentCount = positiveCount + negativeCount + neutralCount;
+
+  const positiveShare = Number(
+    overviewData.positive_share ??
+      kpiData.positive_share ??
+      sentimentData.positive_share ??
+      sentimentObject?.percentages?.positive ??
+      sentimentObject?.positive?.percentage ??
+      sentimentObject?.positive_pct ??
+      (totalSentimentCount > 0
+        ? ((positiveCount / totalSentimentCount) * PERCENTAGE_MULTIPLIER).toFixed(1)
+        : 0)
+  );
+
+  const negativeShare = Number(
+    overviewData.negative_share ??
+      kpiData.negative_share ??
+      sentimentData.negative_share ??
+      sentimentObject?.percentages?.negative ??
+      sentimentObject?.negative?.percentage ??
+      sentimentObject?.negative_pct ??
+      (totalSentimentCount > 0
+        ? ((negativeCount / totalSentimentCount) * PERCENTAGE_MULTIPLIER).toFixed(1)
+        : 0)
+  );
+
+  const neutralShare = Number(
+    overviewData.neutral_share ??
+      kpiData.neutral_share ??
+      sentimentData.neutral_share ??
+      sentimentObject?.percentages?.neutral ??
+      sentimentObject?.neutral?.percentage ??
+      sentimentObject?.neutral_pct ??
+      (totalSentimentCount > 0
+        ? ((neutralCount / totalSentimentCount) * PERCENTAGE_MULTIPLIER).toFixed(1)
+        : 0)
+  );
+
+  return {
     positiveCount,
     negativeCount,
     neutralCount,
     positiveShare,
     negativeShare,
     neutralShare,
-    avgConfidence: Number(data.avg_confidence ?? kpi.avg_confidence ?? sd.avg_confidence ?? 0),
-    dominantSentiment,
-    topPositiveTopic: data.top_positive_topic || data.peak_topic || data.top_topic,
-    topNegativeTopic: data.top_negative_topic,
-    topNeutralTopic: data.top_neutral_topic || data.top_topic,
-    dominantTopic: data.dominant_topic || data.top_topic || data.main_topic,
-    narrativeSummary: data.narrative_summary || data.summary || data.description,
-    peakDateStr: data.peak_date || data.peak_date_str,
-    platformDistribution,
-    keyInsights: Array.isArray(data.key_insights || data.insights) ? (data.key_insights || data.insights) : undefined,
-    topTopics: Array.isArray(topTopicsRaw) ? topTopicsRaw.map(normalizeTopicRecord) : undefined,
-    topEntities: Array.isArray(topEntitiesRaw) ? topEntitiesRaw.map(normalizeEntityRecord) : undefined,
-    postsGrowth:
-      data.posts_growth !== undefined && data.posts_growth !== null
-        ? Number(data.posts_growth)
-        : kpi.posts_growth !== undefined && kpi.posts_growth !== null
-        ? Number(kpi.posts_growth)
-        : undefined,
-    engagementGrowth:
-      data.engagement_growth !== undefined && data.engagement_growth !== null
-        ? Number(data.engagement_growth)
-        : kpi.engagement_growth !== undefined && kpi.engagement_growth !== null
-        ? Number(kpi.engagement_growth)
-        : undefined
   };
 }
 
-/**
- * Kontrak Tambahan: Platform Distribution Gabungan (Instagram vs X)
- * Mengambil proporsi riil gabungan seluruh platform dari database PostgreSQL.
- */
-export async function fetchCombinedPlatformDistributionFromApi(params?: {
-  timeFilter?: string;
-}): Promise<PlatformDistribution | null> {
-  const timeFilter = params?.timeFilter || 'all';
-
-  // 1. Coba request sentiment distribution / overview global tanpa filter platform
-  try {
-    const qs = buildTimeAndPlatformQuery({ timeFilter });
-    const distRes = await fetch(`${API_BASE_URL}/sentiment/distribution${qs}`, {
-      method: 'GET',
-      headers: getAuthHeaders()
-    });
-
-    if (distRes.ok) {
-      const distRaw = await distRes.json().catch(() => null);
-      const sd = distRaw?.data || distRaw || {};
-      const rawPlat = sd.platform_distribution || sd.platforms || sd.by_platform;
-
-      if (rawPlat) {
-        let igPosts = 0;
-        let xPosts = 0;
-        let igPerc: number | undefined;
-        let xPerc: number | undefined;
-
-        if (Array.isArray(rawPlat)) {
-          rawPlat.forEach((p: any) => {
-            const name = String(p.platform || p.name || '').toLowerCase();
-            const count = Number(p.count ?? p.posts ?? p.total ?? 0);
-            if (name === 'instagram' || name === 'ig') {
-              igPosts += count;
-              if (p.percentage !== undefined) igPerc = Number(p.percentage);
-            } else if (name === 'twitter' || name === 'x') {
-              xPosts += count;
-              if (p.percentage !== undefined) xPerc = Number(p.percentage);
-            }
-          });
-        } else if (typeof rawPlat === 'object') {
-          const igObj = rawPlat.instagram ?? rawPlat.Instagram ?? rawPlat.ig;
-          const xObj = rawPlat.x ?? rawPlat.X ?? rawPlat.twitter ?? rawPlat.Twitter;
-          igPosts = typeof igObj === 'number' ? igObj : Number(igObj?.posts ?? igObj?.count ?? 0);
-          xPosts = typeof xObj === 'number' ? xObj : Number(xObj?.posts ?? xObj?.count ?? 0);
-          if (typeof igObj === 'object' && igObj?.percentage !== undefined) igPerc = Number(igObj.percentage);
-          if (typeof xObj === 'object' && xObj?.percentage !== undefined) xPerc = Number(xObj.percentage);
-        }
-
-        const totalP = igPosts + xPosts;
-        if (totalP > 0) {
-          const finalIgPerc = igPerc !== undefined ? Math.round(igPerc) : Math.round((igPosts / totalP) * 100);
-          const finalXPerc = xPerc !== undefined ? Math.round(xPerc) : Math.max(0, 100 - finalIgPerc);
-          return {
-            instagram: { percentage: finalIgPerc, posts: igPosts },
-            x: { percentage: finalXPerc, posts: xPosts }
-          };
-        }
-      }
+function resolveDominantSentimentLabel(
+  overviewData: any,
+  sentimentData: any,
+  sentimentSummary: {
+    positiveShare: number;
+    negativeShare: number;
+    neutralShare: number;
+  }
+): 'positive' | 'negative' | 'neutral' {
+  if (overviewData.dominant_sentiment || sentimentData.dominant_sentiment) {
+    const rawDominant = String(
+      overviewData.dominant_sentiment || sentimentData.dominant_sentiment
+    ).toLowerCase();
+    if (rawDominant.includes('pos')) {
+      return 'positive';
     }
-  } catch {
-    // lanjut ke fallback
+    if (rawDominant.includes('neg')) {
+      return 'negative';
+    }
+    return 'neutral';
   }
 
-  // 2. Fallback: Ambil overview Instagram dan X secara paralel langsung dari FastAPI
+  if (
+    sentimentSummary.positiveShare > sentimentSummary.neutralShare &&
+    sentimentSummary.positiveShare > sentimentSummary.negativeShare
+  ) {
+    return 'positive';
+  }
+  if (
+    sentimentSummary.negativeShare > sentimentSummary.neutralShare &&
+    sentimentSummary.negativeShare > sentimentSummary.positiveShare
+  ) {
+    return 'negative';
+  }
+  return 'neutral';
+}
+
+function parsePlatformDistributionPayload(
+  rawPlatformDistribution: any,
+  totalPosts: number,
+  activePlatform?: string
+): PlatformDistribution | undefined {
+  if (rawPlatformDistribution) {
+    const extracted = extractPlatformCountsAndPercentages(rawPlatformDistribution);
+    const totalPlatformPosts = extracted.instagramPosts + extracted.xPosts;
+
+    const finalInstagramPercentage =
+      extracted.instagramPercentage !== undefined
+        ? Math.round(extracted.instagramPercentage)
+        : totalPlatformPosts > 0
+          ? Math.round((extracted.instagramPosts / totalPlatformPosts) * PERCENTAGE_MULTIPLIER)
+          : 0;
+    const finalXPercentage =
+      extracted.xPercentage !== undefined
+        ? Math.round(extracted.xPercentage)
+        : totalPlatformPosts > 0
+          ? Math.max(0, PERCENTAGE_MULTIPLIER - finalInstagramPercentage)
+          : 0;
+
+    let resolvedInstagramPosts = extracted.instagramPosts;
+    let resolvedXPosts = extracted.xPosts;
+
+    if (
+      totalPosts > 0 &&
+      (resolvedInstagramPosts + resolvedXPosts < totalPosts ||
+        resolvedInstagramPosts + resolvedXPosts <= DEFAULT_POST_LIMIT)
+    ) {
+      resolvedInstagramPosts = Math.round((finalInstagramPercentage / PERCENTAGE_MULTIPLIER) * totalPosts);
+      resolvedXPosts = Math.max(0, totalPosts - resolvedInstagramPosts);
+    }
+
+    return {
+      instagram: { percentage: finalInstagramPercentage, posts: resolvedInstagramPosts },
+      x: { percentage: finalXPercentage, posts: resolvedXPosts },
+    };
+  }
+
+  if (totalPosts > 0) {
+    const isXPlatform =
+      activePlatform?.toLowerCase() === 'x' || activePlatform?.toLowerCase() === 'twitter';
+    return {
+      instagram: {
+        percentage: isXPlatform ? 0 : PERCENTAGE_MULTIPLIER,
+        posts: isXPlatform ? 0 : totalPosts,
+      },
+      x: {
+        percentage: isXPlatform ? PERCENTAGE_MULTIPLIER : 0,
+        posts: isXPlatform ? totalPosts : 0,
+      },
+    };
+  }
+
+  return undefined;
+}
+
+function extractPlatformCountsAndPercentages(rawPlatformDistribution: any): {
+  instagramPosts: number;
+  xPosts: number;
+  instagramPercentage?: number;
+  xPercentage?: number;
+} {
+  let instagramPosts = 0;
+  let xPosts = 0;
+  let instagramPercentage: number | undefined;
+  let xPercentage: number | undefined;
+
+  if (Array.isArray(rawPlatformDistribution)) {
+    rawPlatformDistribution.forEach((platformRow: any) => {
+      const platformName = String(platformRow.platform || platformRow.name || '').toLowerCase();
+      const postCount = Number(
+        platformRow.count ?? platformRow.posts ?? platformRow.post_count ?? platformRow.total ?? 0
+      );
+      const percentageValue = platformRow.percentage ?? platformRow.share;
+
+      if (platformName === 'instagram' || platformName === 'ig') {
+        instagramPosts += postCount;
+        if (percentageValue !== undefined) {
+          instagramPercentage = Number(percentageValue);
+        }
+      } else if (platformName === 'twitter' || platformName === 'x') {
+        xPosts += postCount;
+        if (percentageValue !== undefined) {
+          xPercentage = Number(percentageValue);
+        }
+      }
+    });
+  } else if (typeof rawPlatformDistribution === 'object') {
+    const instagramEntry =
+      rawPlatformDistribution.instagram ??
+      rawPlatformDistribution.Instagram ??
+      rawPlatformDistribution.ig;
+    const xEntry =
+      rawPlatformDistribution.x ??
+      rawPlatformDistribution.X ??
+      rawPlatformDistribution.twitter ??
+      rawPlatformDistribution.Twitter;
+
+    instagramPosts =
+      typeof instagramEntry === 'number'
+        ? instagramEntry
+        : Number(
+            instagramEntry?.posts ??
+              instagramEntry?.count ??
+              instagramEntry?.post_count ??
+              instagramEntry?.total ??
+              0
+          );
+    xPosts =
+      typeof xEntry === 'number'
+        ? xEntry
+        : Number(
+            xEntry?.posts ?? xEntry?.count ?? xEntry?.post_count ?? xEntry?.total ?? 0
+          );
+
+    if (
+      typeof instagramEntry === 'object' &&
+      (instagramEntry?.percentage !== undefined || instagramEntry?.share !== undefined)
+    ) {
+      instagramPercentage = Number(instagramEntry.percentage ?? instagramEntry.share);
+    }
+    if (
+      typeof xEntry === 'object' &&
+      (xEntry?.percentage !== undefined || xEntry?.share !== undefined)
+    ) {
+      xPercentage = Number(xEntry.percentage ?? xEntry.share);
+    }
+  }
+
+  return { instagramPosts, xPosts, instagramPercentage, xPercentage };
+}
+
+async function fetchGlobalPlatformDistribution(
+  timeFilterValue: string
+): Promise<PlatformDistribution | null> {
   try {
-    const [igRes, xRes] = await Promise.allSettled([
-      fetchDashboardOverviewFromApi({ platform: 'instagram', timeFilter }),
-      fetchDashboardOverviewFromApi({ platform: 'x', timeFilter })
+    const queryString = buildTimeAndPlatformQuery({ timeFilter: timeFilterValue });
+    const response = await fetch(`${API_BASE_URL}/sentiment/distribution${queryString}`, {
+      method: 'GET',
+      headers: getAuthHeaders(),
+    });
+
+    if (!response.ok) {
+      return null;
+    }
+
+    const distributionRaw = await response.json().catch(() => null);
+    const sentimentData = distributionRaw?.data || distributionRaw || {};
+    const rawPlatformDistribution =
+      sentimentData.platform_distribution ||
+      sentimentData.platforms ||
+      sentimentData.by_platform;
+
+    if (!rawPlatformDistribution) {
+      return null;
+    }
+
+    const extracted = extractPlatformCountsAndPercentages(rawPlatformDistribution);
+    const totalPlatformPosts = extracted.instagramPosts + extracted.xPosts;
+    if (totalPlatformPosts <= 0) {
+      return null;
+    }
+
+    const instagramPercentage =
+      extracted.instagramPercentage !== undefined
+        ? Math.round(extracted.instagramPercentage)
+        : Math.round((extracted.instagramPosts / totalPlatformPosts) * PERCENTAGE_MULTIPLIER);
+    const xPercentage =
+      extracted.xPercentage !== undefined
+        ? Math.round(extracted.xPercentage)
+        : Math.max(0, PERCENTAGE_MULTIPLIER - instagramPercentage);
+
+    return {
+      instagram: { percentage: instagramPercentage, posts: extracted.instagramPosts },
+      x: { percentage: xPercentage, posts: extracted.xPosts },
+    };
+  } catch {
+    return null;
+  }
+}
+
+async function fetchParallelPlatformDistribution(
+  timeFilterValue: string
+): Promise<PlatformDistribution | null> {
+  try {
+    const [instagramResult, xResult] = await Promise.allSettled([
+      fetchDashboardOverviewFromApi({ platform: 'instagram', timeFilter: timeFilterValue }),
+      fetchDashboardOverviewFromApi({ platform: 'x', timeFilter: timeFilterValue }),
     ]);
 
-    const igData = igRes.status === 'fulfilled' ? igRes.value : null;
-    const xData = xRes.status === 'fulfilled' ? xRes.value : null;
+    const instagramData = instagramResult.status === 'fulfilled' ? instagramResult.value : null;
+    const xData = xResult.status === 'fulfilled' ? xResult.value : null;
 
-    const igPosts = igData?.totalPosts || 0;
+    const instagramPosts = instagramData?.totalPosts || 0;
     const xPosts = xData?.totalPosts || 0;
-    const totalP = igPosts + xPosts;
+    const totalPlatformPosts = instagramPosts + xPosts;
 
-    if (totalP > 0) {
-      const igPerc = Math.round((igPosts / totalP) * 100);
-      const xPerc = Math.max(0, 100 - igPerc);
-      return {
-        instagram: { percentage: igPerc, posts: igPosts },
-        x: { percentage: xPerc, posts: xPosts }
-      };
+    if (totalPlatformPosts <= 0) {
+      return null;
     }
+
+    const instagramPercentage = Math.round((instagramPosts / totalPlatformPosts) * PERCENTAGE_MULTIPLIER);
+    const xPercentage = Math.max(0, PERCENTAGE_MULTIPLIER - instagramPercentage);
+    return {
+      instagram: { percentage: instagramPercentage, posts: instagramPosts },
+      x: { percentage: xPercentage, posts: xPosts },
+    };
   } catch {
-    // ignore
+    return null;
   }
-
-  return null;
 }
 
-/**
- * Kontrak 2: Grafik Line Sentimen
- * GET /api/sentiment/timeline?platform=instagram&time_filter=all
- */
-export async function fetchSentimentTimelineFromApi(params?: {
-  platform?: string;
-  timeFilter?: string;
-}): Promise<TimelinePoint[]> {
-  const qs = buildTimeAndPlatformQuery({
-    platform: params?.platform,
-    timeFilter: params?.timeFilter || 'all'
-  });
+function mapRawRowToTimelinePoint(row: any): TimelinePoint {
+  const rawDate = row.date || row.day || row.timestamp || row.posted_at;
+  const parsedDate = rawDate ? new Date(rawDate) : null;
+  const isValidDate =
+    parsedDate !== null && !isNaN(parsedDate.getTime()) && String(rawDate).includes('-');
 
-  const endpoints = [
-    `${API_BASE_URL}/sentiment/timeline${qs}`,
-    `${API_BASE_URL}/dashboard/timeline${qs}`
-  ];
+  const formattedDate = isValidDate
+    ? `${String(parsedDate.getDate()).padStart(2, '0')} ${parsedDate.toLocaleString('default', { month: 'short' })}`
+    : String(rawDate || '');
 
-  for (const url of endpoints) {
-    try {
-      const res = await fetch(url, {
-        method: 'GET',
-        headers: getAuthHeaders()
-      });
-      if (!res.ok) continue;
-
-      const payload = await res.json();
-      const rawList = Array.isArray(payload)
-        ? payload
-        : Array.isArray(payload?.data)
-        ? payload.data
-        : Array.isArray(payload?.timeline)
-        ? payload.timeline
-        : Array.isArray(payload?.items)
-        ? payload.items
-        : null;
-
-      if (rawList && rawList.length > 0) {
-        return rawList.map((row: any) => {
-          const rawDate = row.date || row.day || row.timestamp || row.posted_at;
-          const parsedDate = rawDate ? new Date(rawDate) : null;
-          const isValidDate = parsedDate && !isNaN(parsedDate.getTime()) && String(rawDate).includes('-');
-          const formattedDate = isValidDate
-            ? `${String(parsedDate.getDate()).padStart(2, '0')} ${parsedDate.toLocaleString('default', { month: 'short' })}`
-            : String(rawDate || '');
-
-          return {
-            date: formattedDate,
-            positive: Number(row.positive ?? row.positive_count ?? 0),
-            neutral: Number(row.neutral ?? row.neutral_count ?? 0),
-            negative: Number(row.negative ?? row.negative_count ?? 0),
-            timestamp: isValidDate ? parsedDate.getTime() : undefined,
-            topPositiveTopic: row.top_positive_topic || row.top_topic || row.peak_topic || undefined,
-            topNegativeTopic: row.top_negative_topic || undefined,
-            topNeutralTopic: row.top_neutral_topic || undefined
-          };
-        });
-      }
-    } catch {
-      // Lanjut ke kandidat endpoint berikutnya
-    }
-  }
-
-  return [];
+  return {
+    date: formattedDate,
+    positive: Number(row.positive ?? row.positive_count ?? 0),
+    neutral: Number(row.neutral ?? row.neutral_count ?? 0),
+    negative: Number(row.negative ?? row.negative_count ?? 0),
+    timestamp: isValidDate ? parsedDate.getTime() : undefined,
+    topPositiveTopic: row.top_topic_positive || row.top_positive_topic || row.top_topic || row.peak_topic || undefined,
+    topNegativeTopic: row.top_topic_negative || row.top_negative_topic || undefined,
+    topNeutralTopic: row.top_topic_neutral || row.top_neutral_topic || undefined,
+  };
 }
 
-/**
- * Kontrak 4: Top 4 Entitas
- * GET /api/entities?limit=4
- */
-export async function fetchEntitiesFromApi(params?: {
-  platform?: string;
-  timeFilter?: string;
-  date?: string | null;
-  limit?: number;
-}): Promise<EntityItem[]> {
-  const limit = params?.limit ?? 4;
-  const queryWithFilter = buildTimeAndPlatformQuery({
-    platform: params?.platform,
-    timeFilter: params?.timeFilter,
-    date: params?.date,
-    limit
-  });
+function parseLiveGraphPayload(payload: any): { nodes: any[]; edges: any[] } {
+  const rawNodes = payload?.nodes || payload?.data?.nodes || payload?.elements?.nodes;
+  const rawEdges =
+    payload?.edges ||
+    payload?.data?.edges ||
+    payload?.links ||
+    payload?.data?.links ||
+    payload?.elements?.edges;
 
-  const endpoints = [
-    `${API_BASE_URL}/entities?limit=${limit}`,
-    `${API_BASE_URL}/entities${queryWithFilter}`,
-    `${API_BASE_URL}/graph/nodes?limit=${limit}`
-  ];
-
-  for (const url of endpoints) {
-    try {
-      const res = await fetch(url, {
-        method: 'GET',
-        headers: getAuthHeaders()
-      });
-      if (!res.ok) continue;
-
-      const payload = await res.json();
-      const rawList = Array.isArray(payload)
-        ? payload
-        : Array.isArray(payload?.data)
-        ? payload.data
-        : Array.isArray(payload?.entities)
-        ? payload.entities
-        : Array.isArray(payload?.nodes)
-        ? payload.nodes
-        : Array.isArray(payload?.items)
-        ? payload.items
-        : null;
-
-      if (rawList && rawList.length > 0) {
-        const filtered = rawList.filter((item: any) => {
-          const d = item.data ? item.data : item;
-          const t = String(d.type || d.entity_type || '').toLowerCase();
-          return t !== 'topic';
-        });
-        const listToUse: any[] = filtered.length > 0 ? filtered : rawList;
-        return listToUse
-          .map((row: any, i: number) => normalizeEntityRecord(row, i))
-          .sort((a: EntityItem, b: EntityItem) => b.mentionCount - a.mentionCount)
-          .slice(0, limit)
-          .map((item: EntityItem, idx: number) => ({ ...item, rank: idx + 1 }));
-      }
-    } catch {
-      // Lanjut ke kandidat endpoint berikutnya
-    }
+  if (!Array.isArray(rawNodes) || !Array.isArray(rawEdges) || rawNodes.length === 0) {
+    return buildMbgFallbackGraph();
   }
 
-  return [];
-}
-
-/**
- * Top Topics Driving Conversation
- * GET /api/topics
- */
-export async function fetchTopicsFromApi(params?: {
-  platform?: string;
-  timeFilter?: string;
-  date?: string | null;
-  limit?: number;
-}): Promise<TopicItem[]> {
-  const limit = params?.limit ?? 4;
-  const qs = buildTimeAndPlatformQuery({
-    platform: params?.platform,
-    timeFilter: params?.timeFilter || 'all',
-    date: params?.date,
-    limit
-  });
-
-  const endpoints = [
-    `${API_BASE_URL}/topics${qs}`,
-    `${API_BASE_URL}/topics?limit=${limit}`
-  ];
-
-  for (const url of endpoints) {
-    try {
-      const res = await fetch(url, {
-        method: 'GET',
-        headers: getAuthHeaders()
-      });
-      if (!res.ok) continue;
-
-      const payload = await res.json();
-      const list = Array.isArray(payload)
-        ? payload
-        : Array.isArray(payload?.data)
-        ? payload.data
-        : Array.isArray(payload?.topics)
-        ? payload.topics
-        : Array.isArray(payload?.items)
-        ? payload.items
-        : null;
-
-      if (list && list.length > 0) {
-        return list.slice(0, limit).map(normalizeTopicRecord);
-      }
-    } catch {
-      // Lanjut ke kandidat berikutnya
-    }
-  }
-
-  return [];
-}
-
-/**
- * Kontrak 5: Daftar Postingan
- * GET /api/sentiment/posts?limit=50&time_filter=all
- */
-export async function fetchPostsFromApi(params?: {
-  platform?: string;
-  timeFilter?: string;
-  limit?: number;
-}): Promise<SocialPost[]> {
-  const qs = buildTimeAndPlatformQuery({
-    platform: params?.platform,
-    timeFilter: params?.timeFilter || 'all',
-    limit: params?.limit ?? 50
-  });
-
-  const candidateEndpoints = [
-    `${API_BASE_URL}/sentiment/posts${qs}`,
-    `${API_BASE_URL}/posts${qs}`
-  ];
-
-  let lastError: Error | null = null;
-
-  for (const endpoint of candidateEndpoints) {
-    try {
-      const response = await fetch(endpoint, {
-        method: 'GET',
-        headers: getAuthHeaders()
-      });
-
-      if (!response.ok) {
-        lastError = new Error(`HTTP ${response.status} pada ${endpoint}`);
-        continue;
-      }
-
-      const payload = await response.json();
-      const rawList = Array.isArray(payload)
-        ? payload
-        : Array.isArray(payload?.data)
-        ? payload.data
-        : Array.isArray(payload?.posts)
-        ? payload.posts
-        : Array.isArray(payload?.items)
-        ? payload.items
-        : Array.isArray(payload?.results)
-        ? payload.results
-        : null;
-
-      if (rawList) {
-        return rawList.map(normalizePostRecord);
-      }
-    } catch (err: any) {
-      lastError = err instanceof Error ? err : new Error(String(err));
-    }
-  }
-
-  throw lastError || new Error('Gagal mengambil data posts dari FastAPI');
-}
-
-export function buildMbgFallbackGraph(): { nodes: any[]; edges: any[] } {
-  const nodes: any[] = [];
-  const edges: any[] = [];
-  const nodeIds = new Set<string>();
-
-  (mbgGraphFallback.topics || []).forEach((tName: string) => {
-    const id = `topic_${tName}`;
-    nodeIds.add(id);
-    nodes.push({
+  const nodes = rawNodes.map((nodeRecord: any) => {
+    const nodeData = nodeRecord.data ? nodeRecord.data : nodeRecord;
+    const rawType = String(nodeData.type || nodeData.group || nodeData.category || 'Topic');
+    const normalizedType = rawType.toLowerCase() === 'topic' ? 'topic' : normalizeEntityType(rawType);
+    return {
       data: {
-        id,
-        label: tName,
-        type: 'topic',
-        weight: 40
-      }
-    });
+        id: String(nodeData.id ?? nodeData.name ?? nodeData.label),
+        label: String(nodeData.label ?? nodeData.name ?? nodeData.id),
+        type: normalizedType,
+        weight: Number(
+          nodeData.weight ??
+            nodeData.mention_count ??
+            nodeData.post_count ??
+            nodeData.count ??
+            nodeData.size ??
+            10
+        ),
+        topic: nodeData.topic ? String(nodeData.topic) : undefined,
+      },
+    };
   });
 
-  (mbgGraphFallback.entities || []).forEach((ent: any) => {
-    const eName = String(ent.name).trim();
-    const id = `entity_${eName}`;
-    const tName = String(ent.topic || '').trim();
-    const tId = `topic_${tName}`;
-    nodeIds.add(id);
-    nodes.push({
-      data: {
-        id,
-        label: eName,
-        type: normalizeEntityType(ent.type),
-        weight: Number(ent.mention_count || 1),
-        topic: tName
-      }
-    });
+  const edges = rawEdges.map((edgeRecord: any, index: number) =>
+    mapRawGraphEdgeToCytoscapeEdge(edgeRecord, index)
+  );
 
-    if (tName && nodeIds.has(tId)) {
-      edges.push({
-        data: {
-          id: `rel_bt_${eName}_${tName}`,
-          source: id,
-          target: tId,
-          sourceName: eName,
-          targetName: tName,
-          type: 'BELONGS_TO_TOPIC',
-          label: 'BELONGS_TO_TOPIC',
-          weight: 1,
-          style: 'dashed'
-        }
-      });
-    }
-  });
-
-  (mbgGraphFallback.co_occurs || []).forEach((co: any, idx: number) => {
-    const sName = String(co.source).trim();
-    const tName = String(co.target).trim();
-    const sId = `entity_${sName}`;
-    const tId = `entity_${tName}`;
-    const npmi = Number(co.weight || 0.5);
-    const cooccur = Number(co.cooccur || 3);
-    const pmi = Number(co.pmi || 0);
-    if (nodeIds.has(sId) && nodeIds.has(tId)) {
-      edges.push({
-        data: {
-          id: `rel_co_${sName}_${tName}_${idx}`,
-          source: sId,
-          target: tId,
-          sourceName: sName,
-          targetName: tName,
-          type: 'CO_OCCURS_WITH',
-          label: `NPMI ${npmi.toFixed(2)}`,
-          weight: npmi,
-          npmi,
-          cooccur,
-          pmi,
-          style: 'solid'
-        }
-      });
-    }
-  });
+  const hasCoOccursEdges = edges.some((edgeItem: any) => edgeItem.data.type === 'CO_OCCURS_WITH');
+  if (!hasCoOccursEdges) {
+    const validNodeIds = new Set(nodes.map((nodeItem: any) => String(nodeItem.data.id)));
+    appendCoOccurrenceFallbackEdges(edges, validNodeIds);
+  }
 
   return { nodes, edges };
 }
 
-/**
- * Kontrak 6: Knowledge Graph
- * GET /api/graph/data?platform=instagram&min_freq=0
- */
-export async function fetchKnowledgeGraphFromApi(params?: {
-  platform?: string;
-  timeFilter?: string;
-  entityType?: string;
-  minFreq?: string | number;
-  topic?: string | null;
-}): Promise<{ nodes: any[]; edges: any[] } | null> {
-  try {
-    const qs = buildTimeAndPlatformQuery({
-      platform: params?.platform,
-      timeFilter: params?.timeFilter,
-      minFreq: params?.minFreq ?? 0,
-      entityType: params?.entityType,
-      topic: params?.topic
-    });
+function mapRawGraphEdgeToCytoscapeEdge(edgeRecord: any, index: number) {
+  const edgeData = edgeRecord.data ? edgeRecord.data : edgeRecord;
+  const rawEdgeType = String(edgeData.type || edgeData.relationship || edgeData.label || 'CO_OCCURS_WITH');
+  const isTopicEdge =
+    rawEdgeType.includes('BELONGS_TO') ||
+    rawEdgeType.includes('TOPIC') ||
+    edgeData.style === 'dashed';
+  const edgeType = isTopicEdge ? 'BELONGS_TO_TOPIC' : 'CO_OCCURS_WITH';
 
-    const response = await fetch(`${API_BASE_URL}/graph/data${qs}`, {
-      method: 'GET',
-      headers: getAuthHeaders()
-    });
+  const rawWeight = Number(edgeData.npmi ?? edgeData.weight ?? edgeData.value ?? 1);
+  const npmiScore =
+    !isTopicEdge && rawWeight > 1.5 ? Number((rawWeight / 10).toFixed(4)) : rawWeight;
+  const cooccurCount = Number(edgeData.cooccur ?? edgeData.value ?? 3);
+  const pmiScore = Number(edgeData.pmi ?? 0);
+  const sourceId = String(edgeData.source ?? edgeData.from);
+  const targetId = String(edgeData.target ?? edgeData.to);
 
-    if (!response.ok) {
-      return buildMbgFallbackGraph();
-    }
+  return {
+    data: {
+      id: String(edgeData.id ?? `edge_${sourceId}_${targetId}_${index}`),
+      source: sourceId,
+      target: targetId,
+      sourceName: String(edgeData.source_name ?? sourceId.replace(/^(entity_|topic_)/, '')),
+      targetName: String(edgeData.target_name ?? targetId.replace(/^(entity_|topic_)/, '')),
+      type: edgeType,
+      label: isTopicEdge ? 'BELONGS_TO_TOPIC' : `NPMI ${npmiScore.toFixed(2)}`,
+      weight: isTopicEdge ? 1 : npmiScore,
+      npmi: isTopicEdge ? undefined : npmiScore,
+      cooccur: isTopicEdge ? undefined : cooccurCount,
+      pmi: isTopicEdge ? undefined : pmiScore,
+      style: isTopicEdge ? 'dashed' : 'solid',
+    },
+  };
+}
 
-    const payload = await response.json();
-    const rawNodes = payload?.nodes || payload?.data?.nodes || payload?.elements?.nodes;
-    const rawEdges =
-      payload?.edges || payload?.data?.edges || payload?.links || payload?.data?.links || payload?.elements?.edges;
+function createBelongsToTopicCytoscapeEdge(
+  entityName: string,
+  topicName: string,
+  entityNodeId: string,
+  topicNodeId: string
+) {
+  return {
+    data: {
+      id: `rel_bt_${entityName}_${topicName}`,
+      source: entityNodeId,
+      target: topicNodeId,
+      sourceName: entityName,
+      targetName: topicName,
+      type: 'BELONGS_TO_TOPIC',
+      label: 'BELONGS_TO_TOPIC',
+      weight: 1,
+      style: 'dashed',
+    },
+  };
+}
 
-    if (!Array.isArray(rawNodes) || !Array.isArray(rawEdges) || rawNodes.length === 0) {
-      return buildMbgFallbackGraph();
-    }
+function appendCoOccurrenceFallbackEdges(edges: any[], validNodeIds: Set<string>): void {
+  (mbgGraphFallback.co_occurs || []).forEach((coOccurrence: any, index: number) => {
+    const sourceName = String(coOccurrence.source).trim();
+    const targetName = String(coOccurrence.target).trim();
+    const sourceId = `entity_${sourceName}`;
+    const targetId = `entity_${targetName}`;
+    const npmiScore = Number(coOccurrence.weight || 0.5);
 
-    const nodes = rawNodes.map((n: any) => {
-      const d = n.data ? n.data : n;
-      const rawType = String(d.type || d.group || d.category || 'Topic');
-      const normType = rawType.toLowerCase() === 'topic' ? 'topic' : normalizeEntityType(rawType);
-      return {
+    if (validNodeIds.has(sourceId) && validNodeIds.has(targetId)) {
+      edges.push({
         data: {
-          id: String(d.id ?? d.name ?? d.label),
-          label: String(d.label ?? d.name ?? d.id),
-          type: normType,
-          weight: Number(d.weight ?? d.mention_count ?? d.post_count ?? d.count ?? d.size ?? 10),
-          topic: d.topic ? String(d.topic) : undefined
-        }
-      };
-    });
-
-    const edges = rawEdges.map((e: any, idx: number) => {
-      const d = e.data ? e.data : e;
-      const rawEdgeType = String(d.type || d.relationship || d.label || 'CO_OCCURS_WITH');
-      const isTopicEdge = rawEdgeType.includes('BELONGS_TO') || rawEdgeType.includes('TOPIC') || d.style === 'dashed';
-      const edgeType = isTopicEdge ? 'BELONGS_TO_TOPIC' : 'CO_OCCURS_WITH';
-      const rawWeight = Number(d.npmi ?? d.weight ?? d.value ?? 1);
-      // Normalize weight if backend multiplied NPMI by 10
-      const npmiVal = !isTopicEdge && rawWeight > 1.5 ? Number((rawWeight / 10).toFixed(4)) : rawWeight;
-      const cooccurVal = Number(d.cooccur ?? d.value ?? 3);
-      const pmiVal = Number(d.pmi ?? 0);
-      const srcStr = String(d.source ?? d.from);
-      const tgtStr = String(d.target ?? d.to);
-      return {
-        data: {
-          id: String(d.id ?? `edge_${srcStr}_${tgtStr}_${idx}`),
-          source: srcStr,
-          target: tgtStr,
-          sourceName: String(d.source_name ?? srcStr.replace(/^(entity_|topic_)/, '')),
-          targetName: String(d.target_name ?? tgtStr.replace(/^(entity_|topic_)/, '')),
-          type: edgeType,
-          label: isTopicEdge ? 'BELONGS_TO_TOPIC' : `NPMI ${npmiVal.toFixed(2)}`,
-          weight: isTopicEdge ? 1 : npmiVal,
-          npmi: isTopicEdge ? undefined : npmiVal,
-          cooccur: isTopicEdge ? undefined : cooccurVal,
-          pmi: isTopicEdge ? undefined : pmiVal,
-          style: isTopicEdge ? 'dashed' : 'solid'
-        }
-      };
-    });
-
-    // Jika backend lama belum mengembalikan edge CO_OCCURS_WITH, lengkapi otomatis dari dataset MBG resmi
-    const hasCoOccurs = edges.some((e: any) => e.data.type === 'CO_OCCURS_WITH');
-    if (!hasCoOccurs) {
-      const validIds = new Set(nodes.map((n: any) => String(n.data.id)));
-      (mbgGraphFallback.co_occurs || []).forEach((co: any, idx: number) => {
-        const sName = String(co.source).trim();
-        const tName = String(co.target).trim();
-        const sId = `entity_${sName}`;
-        const tId = `entity_${tName}`;
-        const npmi = Number(co.weight || 0.5);
-        if (validIds.has(sId) && validIds.has(tId)) {
-          edges.push({
-            data: {
-              id: `rel_co_fallback_${sName}_${tName}_${idx}`,
-              source: sId,
-              target: tId,
-              sourceName: sName,
-              targetName: tName,
-              type: 'CO_OCCURS_WITH',
-              label: `NPMI ${npmi.toFixed(2)}`,
-              weight: npmi,
-              npmi,
-              cooccur: Number(co.cooccur || 3),
-              pmi: Number(co.pmi || 0),
-              style: 'solid'
-            }
-          });
-        }
+          id: `rel_co_${sourceName}_${targetName}_${index}`,
+          source: sourceId,
+          target: targetId,
+          sourceName,
+          targetName,
+          type: 'CO_OCCURS_WITH',
+          label: `NPMI ${npmiScore.toFixed(2)}`,
+          weight: npmiScore,
+          npmi: npmiScore,
+          cooccur: Number(coOccurrence.cooccur || 3),
+          pmi: Number(coOccurrence.pmi || 0),
+          style: 'solid',
+        },
       });
     }
-
-    return { nodes, edges };
-  } catch {
-    return buildMbgFallbackGraph();
-  }
-}
-
-/**
- * Autentikasi Login ke PostgreSQL via FastAPI (`POST /api/auth/login`)
- */
-export async function loginWithFastApi(emailOrUsername: string, password: string) {
-  const response = await fetch(`${API_BASE_URL}/auth/login`, {
-    method: 'POST',
-    headers: {
-      'Content-Type': 'application/json',
-      Accept: 'application/json'
-    },
-    body: JSON.stringify({
-      username: emailOrUsername,
-      email: emailOrUsername,
-      password
-    })
   });
-
-  if (!response.ok) {
-    const errBody = await response.json().catch(() => ({}));
-    throw new Error(errBody?.detail || errBody?.message || 'Email/username atau kata sandi salah.');
-  }
-
-  const data = await response.json();
-  if (data?.access_token || data?.token) {
-    localStorage.setItem('access_token', data.access_token || data.token);
-  }
-  return data;
 }
 
-/**
- * Logout dari sesi FastAPI (`POST /api/auth/logout`)
- */
-export async function logoutFromFastApi() {
-  try {
-    await fetch(`${API_BASE_URL}/auth/logout`, {
-      method: 'POST',
-      headers: getAuthHeaders()
-    });
-  } catch {
-    // Abaikan jika jaringan terputus saat logout
-  } finally {
-    localStorage.removeItem('access_token');
+function getAuthHeaders(): HeadersInit {
+  const accessToken = localStorage.getItem('access_token');
+  const headers: Record<string, string> = {
+    'Content-Type': 'application/json',
+    Accept: 'application/json',
+  };
+  if (accessToken) {
+    headers['Authorization'] = `Bearer ${accessToken}`;
   }
+  return headers;
+}
+
+async function extractSettledJson(
+  settledResult: PromiseSettledResult<Response>
+): Promise<any | null> {
+  if (settledResult.status === 'fulfilled' && settledResult.value.ok) {
+    return await settledResult.value.json().catch(() => null);
+  }
+  return null;
+}
+
+async function fetchFirstAvailableJson(candidateUrls: string[]): Promise<any | null> {
+  for (const endpointUrl of candidateUrls) {
+    try {
+      const response = await fetch(endpointUrl, {
+        method: 'GET',
+        headers: getAuthHeaders(),
+      });
+      if (!response.ok) {
+        continue;
+      }
+      const payload = await response.json();
+      if (payload !== null && payload !== undefined) {
+        return payload;
+      }
+    } catch {
+      continue;
+    }
+  }
+  return null;
+}
+
+function extractListFromPayload(payload: any, candidateKeys: string[]): any[] | null {
+  if (Array.isArray(payload)) {
+    return payload;
+  }
+  if (payload && typeof payload === 'object') {
+    for (const key of candidateKeys) {
+      if (Array.isArray(payload[key])) {
+        return payload[key];
+      }
+    }
+  }
+  return null;
 }

@@ -1,69 +1,97 @@
-from fastapi import APIRouter, Depends, Query, HTTPException
+from typing import Any, Dict, Optional
+from fastapi import APIRouter, Depends, Query
+from sqlalchemy import desc, func, or_
 from sqlalchemy.orm import Session
-from sqlalchemy import func, or_
-from typing import List, Optional
-from pydantic import BaseModel
-from datetime import datetime
+from app.api.dependencies import apply_date_filter, apply_platform_filter, parse_filter_days
+from app.api.routes.posts import format_post
+from app.core.database import SocialPost, get_db
 
-from app.api.dependencies import get_db
-from models import Post
 
-router = APIRouter(tags=["Search"])
+router = APIRouter()
 
-class PostResponse(BaseModel):
-    platform: str
-    author_username: str
-    content: str
-    posted_at: Optional[datetime]
-    sentiment: Optional[str]
-    likes: int
+DEFAULT_SEARCH_LIMIT = 50
+MAX_SEARCH_LIMIT = 200
 
-    class Config:
-        from_attributes = True
 
-@router.get("", response_model=List[PostResponse])
-@router.get("/", response_model=List[PostResponse])
-def global_search(
-    q: Optional[str] = Query(None, description="Kata kunci untuk Full-Text Search"),
-    platform: Optional[str] = Query(None, description="Filter berdasarkan platform (misal: x, tiktok)"),
-    sentiment: Optional[str] = Query(None, description="Filter berdasarkan sentimen (positive, negative, neutral)"),
-    start_date: Optional[datetime] = Query(None, description="Mulai tanggal"),
-    end_date: Optional[datetime] = Query(None, description="Sampai tanggal"),
-    limit: int = Query(50, ge=1, le=500),
+@router.get("")
+@router.get("/")
+def search_posts(
+    q: Optional[str] = Query(None, description="Search keyword for text, author, topic, or entity"),
+    keyword: Optional[str] = Query(None, description="Alias for q"),
+    platform: Optional[str] = Query(None, description="Filter by platform (instagram, x)"),
+    sentiment: Optional[str] = Query(None, description="Filter by sentiment (positive, negative, neutral)"),
+    topic: Optional[str] = Query(None, description="Filter by topic"),
+    days: Optional[str] = Query(None, description="Filter by past N days"),
+    timeframe: Optional[str] = Query(None, description="Alias for days"),
+    sort_by: str = Query("recent", description="Sort by: recent, engagement"),
     skip: int = Query(0, ge=0),
-    db: Session = Depends(get_db)
+    limit: int = Query(DEFAULT_SEARCH_LIMIT, ge=1, le=MAX_SEARCH_LIMIT),
+    db: Session = Depends(get_db),
+) -> Dict[str, Any]:
+    search_term = (q or keyword or "").strip()
+    filter_days = parse_filter_days(days, timeframe)
+
+    query = _build_search_query(
+        db=db,
+        search_term=search_term,
+        platform=platform,
+        sentiment=sentiment,
+        topic=topic,
+        filter_days=filter_days,
+    )
+    total_matches = query.count()
+    ordered_query = _apply_search_sorting(query, sort_by)
+    matching_posts = ordered_query.offset(skip).limit(limit).all()
+
+    return {
+        "total": total_matches,
+        "skip": skip,
+        "limit": limit,
+        "query": search_term,
+        "results": [format_post(post) for post in matching_posts],
+        "data": [format_post(post) for post in matching_posts],
+    }
+
+
+def _build_search_query(
+    db: Session,
+    search_term: str,
+    platform: Optional[str],
+    sentiment: Optional[str],
+    topic: Optional[str],
+    filter_days: Optional[int],
 ):
-    # Base query
-    query = db.query(Post)
+    query = db.query(SocialPost)
+    query = apply_platform_filter(query, platform)
+    query = apply_date_filter(query, db, filter_days)
 
-    # 1. Full-Text Search menggunakan ILIKE (Atau native tsvector untuk PostgreSQL)
-    if q:
-        # Menggunakan ILIKE untuk support lintas-database secara sederhana, 
-        # namun untuk PostgreSQL skala besar bisa diganti dengan:
-        # query = query.filter(func.to_tsvector('indonesian', Post.content).op('@@')(func.plainto_tsquery('indonesian', q)))
-        search_term = f"%{q}%"
-        query = query.filter(or_(
-            Post.content.ilike(search_term),
-            Post.author_username.ilike(search_term)
-        ))
+    if search_term:
+        wildcard_term = f"%{search_term}%"
+        query = query.filter(
+            or_(
+                SocialPost.text_content.ilike(wildcard_term),
+                SocialPost.author.ilike(wildcard_term),
+                SocialPost.topic.ilike(wildcard_term),
+                SocialPost.entities.ilike(wildcard_term),
+            )
+        )
 
-    # 2. Filter Terstruktur (Memanfaatkan Indexing yang baru saja kita buat)
-    if platform:
-        query = query.filter(Post.platform == platform)
-    
-    if sentiment:
-        query = query.filter(Post.sentiment == sentiment)
-        
-    if start_date:
-        query = query.filter(Post.posted_at >= start_date)
-        
-    if end_date:
-        query = query.filter(Post.posted_at <= end_date)
+    if sentiment and sentiment.lower() not in ("all", "semua"):
+        query = query.filter(func.lower(SocialPost.sentiment) == sentiment.lower())
 
-    # Sorting & Pagination
-    # Urutkan berdasarkan waktu posting terbaru
-    query = query.order_by(Post.posted_at.desc())
-    
-    results = query.offset(skip).limit(limit).all()
-    
-    return results
+    if topic and topic.lower() not in ("all", "semua"):
+        query = query.filter(SocialPost.topic.ilike(f"%{topic}%"))
+
+    return query
+
+
+def _apply_search_sorting(query, sort_by: str):
+    if sort_by == "engagement":
+        engagement_expression = (
+            func.coalesce(SocialPost.likes, 0)
+            + func.coalesce(SocialPost.comments, 0)
+            + func.coalesce(SocialPost.shares, 0)
+        )
+        return query.order_by(desc(engagement_expression))
+
+    return query.order_by(desc(SocialPost.created_at))
