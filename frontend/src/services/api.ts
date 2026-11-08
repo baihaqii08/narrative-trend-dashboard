@@ -1089,9 +1089,26 @@ function mapRawRowToTimelinePoint(row: any): TimelinePoint {
     neutral: Number(row.neutral ?? row.neutral_count ?? 0),
     negative: Number(row.negative ?? row.negative_count ?? 0),
     timestamp: isValidDate ? parsedDate.getTime() : undefined,
-    topPositiveTopic: row.top_topic_positive || row.top_positive_topic || row.top_topic || row.peak_topic || undefined,
-    topNegativeTopic: row.top_topic_negative || row.top_negative_topic || undefined,
-    topNeutralTopic: row.top_topic_neutral || row.top_neutral_topic || undefined,
+    topPositiveTopic:
+      row.topPositiveTopic ||
+      row.top_positive_topic ||
+      row.top_topic_positive ||
+      row.dominant_topic ||
+      row.top_topic ||
+      row.peak_topic ||
+      undefined,
+    topNegativeTopic:
+      row.topNegativeTopic ||
+      row.top_negative_topic ||
+      row.top_topic_negative ||
+      row.dominant_topic ||
+      undefined,
+    topNeutralTopic:
+      row.topNeutralTopic ||
+      row.top_neutral_topic ||
+      row.top_topic_neutral ||
+      row.dominant_topic ||
+      undefined,
   };
 }
 

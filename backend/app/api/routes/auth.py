@@ -1,154 +1,139 @@
 from datetime import timedelta
-from typing import Any, Dict, Tuple
-from fastapi import APIRouter, Depends, HTTPException, Request, status
+from typing import Any, Optional, Tuple
+from fastapi import APIRouter, Depends, HTTPException, Request
 from sqlalchemy import or_
 from sqlalchemy.orm import Session
-from app.api.dependencies import get_current_user
+from app.api.dependencies import get_current_user, get_db
 from app.core import security
 from app.core.config import settings
-from app.core.database import User, get_db
-from app.schemas.user import User as UserSchema, UserCreate
+from app.schemas import user as user_schemas
+from models import User
 
 
 router = APIRouter()
 
-DEMO_FALLBACK_EMAIL = "cameron@nolimit.id"
-DEMO_FALLBACK_USERNAME = "cameron"
-DEMO_FALLBACK_FULL_NAME = "Cameron Williamson"
 
-
-@router.post("/login")
+@router.post("/login", response_model=user_schemas.Token)
 async def login_access_token(
     request: Request,
     db: Session = Depends(get_db),
 ) -> Any:
-    identifier, password = await _extract_login_credentials(request)
-    if not identifier or not password:
-        raise HTTPException(status_code=400, detail="Email/username and password are required")
+    """Authenticate user via JSON body or OAuth2 form data and issue a Bearer access token."""
+    username_or_email, password = await _extract_login_credentials(request)
+    if not username_or_email or not password:
+        raise HTTPException(
+            status_code=400,
+            detail="Email/Username dan Password harus diisi",
+        )
 
-    user = _find_user_by_identifier(db, identifier)
-    if not user:
-        user = _resolve_fallback_user(db, identifier, password)
+    authenticated_user = _authenticate_user(db, username_or_email, password)
+    access_token_expires = timedelta(minutes=settings.ACCESS_TOKEN_EXPIRE_MINUTES)
+    token_subject = authenticated_user.username or authenticated_user.email
 
-    _ensure_user_is_active(user)
-    return _build_login_response(user)
+    return {
+        "access_token": security.create_access_token(
+            token_subject,
+            expires_delta=access_token_expires,
+        ),
+        "token_type": "bearer",
+    }
 
 
-@router.post("/register", response_model=UserSchema)
+@router.post("/register", response_model=user_schemas.User)
 def register_user(
     *,
     db: Session = Depends(get_db),
-    user_in: UserCreate,
+    user_in: user_schemas.UserCreate,
 ) -> Any:
-    existing_user = db.query(User).filter(
-        or_(User.email == user_in.email, User.username == user_in.username)
-    ).first()
-    if existing_user:
+    """Register a new user account after verifying username and email uniqueness."""
+    identifier = user_in.email or user_in.username
+    if not identifier:
+        raise HTTPException(status_code=400, detail="Email atau Username wajib diisi")
+
+    resolved_username = user_in.username or (
+        user_in.email.split("@")[0] if user_in.email else "user"
+    )
+    resolved_email = user_in.email
+
+    if _is_user_already_registered(db, resolved_username, resolved_email):
         raise HTTPException(
             status_code=400,
-            detail="The user with this email or username already exists in the system.",
+            detail="User dengan email atau username ini sudah terdaftar.",
         )
 
-    created_user = User(
-        email=user_in.email,
-        username=user_in.username or (user_in.email.split("@")[0] if user_in.email else "user"),
-        full_name=user_in.full_name,
-        hashed_password=security.get_password_hash(user_in.password),
+    new_user = User(
+        username=resolved_username,
+        email=resolved_email,
+        full_name=user_in.full_name or resolved_username,
+        password_hash=security.get_password_hash(user_in.password),
         is_active=True,
     )
-    db.add(created_user)
+    db.add(new_user)
     db.commit()
-    db.refresh(created_user)
-    return created_user
+    db.refresh(new_user)
+    return new_user
 
 
-@router.get("/me")
+@router.get("/me", response_model=user_schemas.User)
 def read_users_me(
     current_user: User = Depends(get_current_user),
 ) -> Any:
-    if not current_user:
-        return {
-            "id": 1,
-            "username": DEMO_FALLBACK_USERNAME,
-            "email": DEMO_FALLBACK_EMAIL,
-            "full_name": DEMO_FALLBACK_FULL_NAME,
-            "name": DEMO_FALLBACK_FULL_NAME,
-            "is_active": True,
-        }
-    return {
-        "id": current_user.id,
-        "username": current_user.username,
-        "email": current_user.email,
-        "full_name": current_user.full_name,
-        "name": current_user.full_name or current_user.username,
-        "is_active": current_user.is_active,
-    }
+    return current_user
 
 
-async def _extract_login_credentials(request: Request) -> Tuple[str, str]:
+@router.post("/logout")
+def logout() -> Any:
+    return {"message": "Successfully logged out. Please clear your token from local storage."}
+
+
+async def _extract_login_credentials(request: Request) -> Tuple[Optional[str], Optional[str]]:
     content_type = request.headers.get("content-type", "")
     if "application/json" in content_type:
-        request_body: Dict[str, Any] = await request.json()
-        identifier = request_body.get("email") or request_body.get("username") or ""
-        password = request_body.get("password") or ""
-        return str(identifier), str(password)
+        try:
+            body = await request.json()
+        except Exception:
+            raise HTTPException(status_code=400, detail="Format JSON tidak valid")
+        return body.get("email") or body.get("username"), body.get("password")
 
     form_data = await request.form()
-    identifier = form_data.get("username") or form_data.get("email") or ""
-    password = form_data.get("password") or ""
-    return str(identifier), str(password)
+    return form_data.get("username") or form_data.get("email"), form_data.get("password")
 
 
-def _find_user_by_identifier(db: Session, identifier: str):
-    return db.query(User).filter(
-        or_(User.email == identifier, User.username == identifier)
-    ).first()
-
-
-def _resolve_fallback_user(db: Session, identifier: str, password: str) -> User:
-    existing_user_count = db.query(User).count()
-    if existing_user_count == 0:
-        default_username = identifier.split("@")[0] if "@" in identifier else identifier
-        demo_user = User(
-            email=identifier if "@" in identifier else f"{identifier}@nolimit.id",
-            username=default_username,
-            full_name=default_username.capitalize(),
-            hashed_password=security.get_password_hash(password),
-            is_active=True,
+def _authenticate_user(
+    db: Session,
+    username_or_email: str,
+    plain_password: str,
+) -> User:
+    matched_user = (
+        db.query(User)
+        .filter(
+            or_(
+                User.email == username_or_email,
+                User.username == username_or_email,
+            )
         )
-        db.add(demo_user)
-        db.commit()
-        db.refresh(demo_user)
-        return demo_user
-
-    fallback_user = db.query(User).first()
-    if not fallback_user:
-        raise HTTPException(
-            status_code=status.HTTP_401_UNAUTHORIZED,
-            detail="Email atau kata sandi salah.",
-        )
-    return fallback_user
-
-
-def _ensure_user_is_active(user: User) -> None:
-    if not user.is_active:
-        raise HTTPException(status_code=400, detail="Inactive user")
-
-
-def _build_login_response(user: User) -> Dict[str, Any]:
-    access_token_expires = timedelta(minutes=settings.ACCESS_TOKEN_EXPIRE_MINUTES)
-    access_token = security.create_access_token(
-        user.id,
-        expires_delta=access_token_expires,
+        .first()
     )
-    return {
-        "access_token": access_token,
-        "token_type": "bearer",
-        "user": {
-            "id": user.id,
-            "username": user.username,
-            "email": user.email,
-            "full_name": user.full_name or user.username,
-            "name": user.full_name or user.username,
-        },
-    }
+    if not matched_user or not security.verify_password(plain_password, matched_user.password_hash):
+        raise HTTPException(status_code=400, detail="Email/Username atau password salah")
+    if not matched_user.is_active:
+        raise HTTPException(status_code=400, detail="User tidak aktif")
+    return matched_user
+
+
+def _is_user_already_registered(
+    db: Session,
+    username: str,
+    email: Optional[str],
+) -> bool:
+    existing_user = (
+        db.query(User)
+        .filter(
+            or_(
+                User.username == username,
+                (User.email == email) if email else False,
+            )
+        )
+        .first()
+    )
+    return existing_user is not None

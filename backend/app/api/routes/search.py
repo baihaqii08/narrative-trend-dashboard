@@ -1,97 +1,85 @@
-from typing import Any, Dict, Optional
+from datetime import datetime
+from typing import List, Optional
 from fastapi import APIRouter, Depends, Query
-from sqlalchemy import desc, func, or_
+from pydantic import BaseModel
+from sqlalchemy import or_
 from sqlalchemy.orm import Session
-from app.api.dependencies import apply_date_filter, apply_platform_filter, parse_filter_days
-from app.api.routes.posts import format_post
-from app.core.database import SocialPost, get_db
+from app.api.dependencies import get_db
+from models import Post
 
 
-router = APIRouter()
+router = APIRouter(tags=["Search"])
 
 DEFAULT_SEARCH_LIMIT = 50
-MAX_SEARCH_LIMIT = 200
+MAX_SEARCH_LIMIT = 500
 
 
-@router.get("")
-@router.get("/")
-def search_posts(
-    q: Optional[str] = Query(None, description="Search keyword for text, author, topic, or entity"),
-    keyword: Optional[str] = Query(None, description="Alias for q"),
-    platform: Optional[str] = Query(None, description="Filter by platform (instagram, x)"),
-    sentiment: Optional[str] = Query(None, description="Filter by sentiment (positive, negative, neutral)"),
-    topic: Optional[str] = Query(None, description="Filter by topic"),
-    days: Optional[str] = Query(None, description="Filter by past N days"),
-    timeframe: Optional[str] = Query(None, description="Alias for days"),
-    sort_by: str = Query("recent", description="Sort by: recent, engagement"),
-    skip: int = Query(0, ge=0),
+class PostResponse(BaseModel):
+    platform: str
+    author_username: str
+    content: str
+    posted_at: Optional[datetime]
+    sentiment: Optional[str]
+    likes: int
+
+    class Config:
+        from_attributes = True
+
+
+@router.get("", response_model=List[PostResponse])
+@router.get("/", response_model=List[PostResponse])
+def global_search(
+    q: Optional[str] = Query(None, description="Kata kunci untuk Full-Text Search"),
+    platform: Optional[str] = Query(None, description="Filter berdasarkan platform (misal: x, tiktok)"),
+    sentiment: Optional[str] = Query(None, description="Filter berdasarkan sentimen (positive, negative, neutral)"),
+    start_date: Optional[datetime] = Query(None, description="Mulai tanggal"),
+    end_date: Optional[datetime] = Query(None, description="Sampai tanggal"),
     limit: int = Query(DEFAULT_SEARCH_LIMIT, ge=1, le=MAX_SEARCH_LIMIT),
+    skip: int = Query(0, ge=0),
     db: Session = Depends(get_db),
-) -> Dict[str, Any]:
-    search_term = (q or keyword or "").strip()
-    filter_days = parse_filter_days(days, timeframe)
-
-    query = _build_search_query(
+) -> List[Post]:
+    search_query = _build_search_query(
         db=db,
-        search_term=search_term,
+        keyword=q,
         platform=platform,
         sentiment=sentiment,
-        topic=topic,
-        filter_days=filter_days,
+        start_date=start_date,
+        end_date=end_date,
     )
-    total_matches = query.count()
-    ordered_query = _apply_search_sorting(query, sort_by)
-    matching_posts = ordered_query.offset(skip).limit(limit).all()
-
-    return {
-        "total": total_matches,
-        "skip": skip,
-        "limit": limit,
-        "query": search_term,
-        "results": [format_post(post) for post in matching_posts],
-        "data": [format_post(post) for post in matching_posts],
-    }
+    return (
+        search_query.order_by(Post.posted_at.desc())
+        .offset(skip)
+        .limit(limit)
+        .all()
+    )
 
 
 def _build_search_query(
     db: Session,
-    search_term: str,
+    keyword: Optional[str],
     platform: Optional[str],
     sentiment: Optional[str],
-    topic: Optional[str],
-    filter_days: Optional[int],
+    start_date: Optional[datetime],
+    end_date: Optional[datetime],
 ):
-    query = db.query(SocialPost)
-    query = apply_platform_filter(query, platform)
-    query = apply_date_filter(query, db, filter_days)
+    query = db.query(Post)
 
-    if search_term:
-        wildcard_term = f"%{search_term}%"
+    if keyword:
+        wildcard_pattern = f"%{keyword}%"
         query = query.filter(
             or_(
-                SocialPost.text_content.ilike(wildcard_term),
-                SocialPost.author.ilike(wildcard_term),
-                SocialPost.topic.ilike(wildcard_term),
-                SocialPost.entities.ilike(wildcard_term),
+                Post.content.ilike(wildcard_pattern),
+                Post.author_username.ilike(wildcard_pattern),
             )
         )
 
-    if sentiment and sentiment.lower() not in ("all", "semua"):
-        query = query.filter(func.lower(SocialPost.sentiment) == sentiment.lower())
-
-    if topic and topic.lower() not in ("all", "semua"):
-        query = query.filter(SocialPost.topic.ilike(f"%{topic}%"))
+    if platform:
+        query = query.filter(Post.platform == platform)
+    if sentiment:
+        query = query.filter(Post.sentiment == sentiment)
+    if start_date:
+        query = query.filter(Post.posted_at >= start_date)
+    if end_date:
+        query = query.filter(Post.posted_at <= end_date)
 
     return query
-
-
-def _apply_search_sorting(query, sort_by: str):
-    if sort_by == "engagement":
-        engagement_expression = (
-            func.coalesce(SocialPost.likes, 0)
-            + func.coalesce(SocialPost.comments, 0)
-            + func.coalesce(SocialPost.shares, 0)
-        )
-        return query.order_by(desc(engagement_expression))
-
-    return query.order_by(desc(SocialPost.created_at))

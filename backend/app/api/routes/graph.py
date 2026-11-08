@@ -1,11 +1,12 @@
 from typing import Any, Dict, List, Optional, Set
 from fastapi import APIRouter, Depends, Query
 from sqlalchemy.orm import Session
-from app.core.cache import ttl_cache
-from app.core.database import get_db, get_neo4j, neo4j_conn
+from app.api.dependencies import get_db
+from app.core.cache import in_memory_cache
+from app.core.database import get_neo4j_driver
 
 
-router = APIRouter()
+router = APIRouter(tags=["Graph"])
 
 CACHE_TTL_SECONDS = 120
 TOPIC_NODE_DEFAULT_WEIGHT = 40
@@ -44,25 +45,23 @@ TOPIC_LABEL_MAP: Dict[str, str] = {
 @router.get("/")
 @router.get("/data")
 @router.get("/network")
-@ttl_cache(ttl_seconds=CACHE_TTL_SECONDS)
+@in_memory_cache(ttl_seconds=CACHE_TTL_SECONDS)
 def get_graph_data(
-    topic: Optional[str] = Query(None, description="Filter by topic name"),
-    entity_type: Optional[str] = Query(None, description="Filter by entity category"),
-    type: Optional[str] = Query(None, description="Alias for entity_type"),
-    min_weight: int = Query(1, ge=0, description="Minimum mention frequency"),
-    min_freq: Optional[int] = Query(None, ge=0, description="Alias for min_weight"),
-    limit: int = Query(DEFAULT_GRAPH_NODE_LIMIT, ge=10, le=1000),
     platform: Optional[str] = Query(None),
     time_filter: Optional[str] = Query(None),
-    neo4j_session=Depends(get_neo4j),
+    entity_type: Optional[str] = Query(None, description="Filter by entity category"),
+    type: Optional[str] = Query(None, description="Alias for entity_type"),
+    topic: Optional[str] = Query(None, description="Filter by topic name"),
+    min_freq: Optional[int] = Query(0, ge=0, description="Minimum mention frequency"),
+    min_weight: Optional[int] = Query(None, ge=0, description="Alias for min_freq"),
+    limit: int = Query(DEFAULT_GRAPH_NODE_LIMIT, ge=10, le=1000),
     db: Session = Depends(get_db),
 ) -> Dict[str, Any]:
     """Return Knowledge Graph nodes and edges from Neo4j (port 7687), or the verified MBG dataset fallback."""
     resolved_entity_type = entity_type or type
-    resolved_min_frequency = min_freq if min_freq is not None else min_weight
+    resolved_min_frequency = min_freq if min_freq is not None else (min_weight or 0)
 
     live_graph = fetch_live_neo4j_graph(
-        neo4j_session=neo4j_session,
         min_frequency=resolved_min_frequency,
         entity_type=resolved_entity_type,
         topic=topic,
@@ -82,14 +81,12 @@ def get_graph_nodes(
     entity_type: Optional[str] = Query(None),
     topic: Optional[str] = Query(None),
     min_freq: Optional[int] = Query(0),
-    neo4j_session=Depends(get_neo4j),
     db: Session = Depends(get_db),
 ) -> List[Dict[str, Any]]:
     graph_data = get_graph_data(
         topic=topic,
         entity_type=entity_type,
         min_freq=min_freq,
-        neo4j_session=neo4j_session,
         db=db,
     )
     return graph_data.get("nodes", [])
@@ -100,14 +97,12 @@ def get_graph_edges(
     entity_type: Optional[str] = Query(None),
     topic: Optional[str] = Query(None),
     min_freq: Optional[int] = Query(0),
-    neo4j_session=Depends(get_neo4j),
     db: Session = Depends(get_db),
 ) -> List[Dict[str, Any]]:
     graph_data = get_graph_data(
         topic=topic,
         entity_type=entity_type,
         min_freq=min_freq,
-        neo4j_session=neo4j_session,
         db=db,
     )
     return graph_data.get("edges", [])
@@ -116,10 +111,9 @@ def get_graph_edges(
 @router.get("/node/{node_id}")
 def get_node_detail(
     node_id: str,
-    neo4j_session=Depends(get_neo4j),
     db: Session = Depends(get_db),
 ) -> Dict[str, Any]:
-    graph_data = get_graph_data(neo4j_session=neo4j_session, db=db)
+    graph_data = get_graph_data(db=db)
     for node_record in graph_data.get("nodes", []):
         if node_record.get("id") == node_id or node_record.get("name") == node_id:
             return node_record
@@ -127,43 +121,34 @@ def get_node_detail(
 
 
 def fetch_live_neo4j_graph(
-    neo4j_session: Any = None,
     min_frequency: Optional[int] = 0,
     entity_type: Optional[str] = None,
     topic: Optional[str] = None,
 ) -> Optional[Dict[str, Any]]:
-    session = neo4j_session if not isinstance(neo4j_session, Depends.__class__) and neo4j_session is not None else None
-    created_local_session = False
-
-    if session is None:
-        session = neo4j_conn.get_session()
-        created_local_session = True
-
-    if session is None:
+    driver = get_neo4j_driver()
+    if not driver:
         return None
 
     try:
-        topics_records, entities_records, belongs_to_records, co_occurs_records = _query_neo4j_records(session)
-        if not entities_records:
-            return None
+        with driver.session() as session:
+            topics_records, entities_records, belongs_to_records, co_occurs_records = _query_neo4j_records(session)
+            if not entities_records:
+                return None
 
-        return _assemble_graph_payload(
-            source_label="neo4j_port_7687",
-            topic_names=_extract_topic_names_from_neo4j(topics_records),
-            topic_keywords_by_name=_extract_topic_keywords_from_neo4j(topics_records),
-            entities_by_name=_normalize_neo4j_entities(entities_records),
-            belongs_to_pairs=_normalize_belongs_to_records(belongs_to_records),
-            co_occurrence_records=co_occurs_records,
-            min_frequency=int(min_frequency or 0),
-            entity_type=entity_type,
-            topic=topic,
-        )
+            return _assemble_graph_payload(
+                source_label="neo4j_port_7687",
+                topic_names=_extract_topic_names_from_neo4j(topics_records),
+                topic_keywords_by_name=_extract_topic_keywords_from_neo4j(topics_records),
+                entities_by_name=_normalize_neo4j_entities(entities_records),
+                belongs_to_pairs=_normalize_belongs_to_records(belongs_to_records),
+                co_occurrence_records=co_occurs_records,
+                min_frequency=int(min_frequency or 0),
+                entity_type=entity_type,
+                topic=topic,
+            )
     except Exception as neo4j_error:
-        print(f"Neo4j live query fallback triggered: {neo4j_error}")
+        print(f"[NEO4J LIVE ERROR] {neo4j_error}")
         return None
-    finally:
-        if created_local_session and session is not None:
-            session.close()
 
 
 def build_mbg_graph_data(
