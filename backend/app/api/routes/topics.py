@@ -1,94 +1,102 @@
-from fastapi import APIRouter, Depends, Query, HTTPException
-from sqlalchemy.orm import Session
-from sqlalchemy import func, cast, Date
-from typing import Optional, List, Dict, Any
 from datetime import datetime, timedelta
-
+from typing import Any, Dict, List
+from fastapi import APIRouter, Depends, HTTPException, Query
+from sqlalchemy import Date, cast, func
+from sqlalchemy.orm import Session
 from app.api.dependencies import get_db
-from models import Topic, Post
+from models import Post, Topic
+
 
 router = APIRouter(tags=["Topics"])
+
+DEFAULT_TOPICS_LIMIT = 10
+MAX_TOPICS_LIMIT = 100
+DEFAULT_TIMELINE_DAYS = 7
+RELATED_POSTS_LIMIT = 20
+
 
 @router.get("")
 @router.get("/")
 def get_topics(
-    limit: int = Query(10, ge=1, le=100),
-    db: Session = Depends(get_db)
-):
-    """
-    12.4: Daftar topik trending.
-    """
+    limit: int = Query(DEFAULT_TOPICS_LIMIT, ge=1, le=MAX_TOPICS_LIMIT),
+    db: Session = Depends(get_db),
+) -> List[Dict[str, Any]]:
+    """Return top trending topics ordered by post count."""
     topics = db.query(Topic).order_by(Topic.post_count.desc()).limit(limit).all()
-    results = [
-        {
-            "id": t.id,
-            "name": t.name,
-            "keywords": t.keywords,
-            "post_count": t.post_count,
-            "first_seen": t.first_seen.isoformat() if t.first_seen else None,
-            "last_seen": t.last_seen.isoformat() if t.last_seen else None
-        }
-        for t in topics
-    ]
-    return results
+    return [_serialize_topic_summary(topic_item) for topic_item in topics]
+
 
 @router.get("/timeline")
 def get_topics_timeline(
-    days: int = Query(7),
-    db: Session = Depends(get_db)
-):
-    """
-    12.4: Timeline kemunculan topik.
-    """
-    start_date = datetime.utcnow() - timedelta(days=days)
-    stats = db.query(
-        cast(Post.posted_at, Date).label("date"),
-        Post.topic_id,
-        func.count(Post.id).label("count")
-    ).filter(Post.posted_at >= start_date) \
-     .group_by(cast(Post.posted_at, Date), Post.topic_id) \
-     .order_by(cast(Post.posted_at, Date)).all()
+    days: int = Query(DEFAULT_TIMELINE_DAYS),
+    db: Session = Depends(get_db),
+) -> List[Dict[str, Any]]:
+    """Return daily post counts per topic over the requested day window."""
+    cutoff_date = datetime.utcnow() - timedelta(days=days)
+    post_date_expression = cast(Post.posted_at, Date)
 
-    timeline = [
+    daily_topic_rows = (
+        db.query(
+            post_date_expression.label("date"),
+            Post.topic_id,
+            func.count(Post.id).label("count"),
+        )
+        .filter(Post.posted_at >= cutoff_date)
+        .group_by(post_date_expression, Post.topic_id)
+        .order_by(post_date_expression)
+        .all()
+    )
+
+    return [
         {
-            "date": str(s.date),
-            "topic_id": s.topic_id,
-            "count": s.count
+            "date": str(row.date),
+            "topic_id": row.topic_id,
+            "count": row.count,
         }
-        for s in stats
+        for row in daily_topic_rows
     ]
-    return timeline
+
 
 @router.get("/{topic_id}")
 def get_topic_detail(
     topic_id: int,
-    db: Session = Depends(get_db)
-):
-    """
-    12.4: Detail topik beserta post terkait.
-    """
-    topic = db.query(Topic).filter(Topic.id == topic_id).first()
-    if not topic:
+    db: Session = Depends(get_db),
+) -> Dict[str, Any]:
+    """Return detailed topic metadata along with a sample of related posts."""
+    topic_item = db.query(Topic).filter(Topic.id == topic_id).first()
+    if not topic_item:
         raise HTTPException(status_code=404, detail="Topic not found")
-        
-    posts = db.query(Post).filter(Post.topic_id == topic_id).limit(20).all()
+
+    related_posts = (
+        db.query(Post)
+        .filter(Post.topic_id == topic_id)
+        .limit(RELATED_POSTS_LIMIT)
+        .all()
+    )
+
     return {
-        "id": topic.id,
-        "name": topic.name,
-        "keywords": topic.keywords,
-        "post_count": topic.post_count,
-        "first_seen": topic.first_seen.isoformat() if topic.first_seen else None,
-        "last_seen": topic.last_seen.isoformat() if topic.last_seen else None,
-        "related_posts": [
-            {
-                "id": str(p.id),
-                "author_username": p.author_username,
-                "content": p.content,
-                "sentiment": p.sentiment,
-                "likes": p.likes,
-                "posted_at": p.posted_at.isoformat() if p.posted_at else None
-            }
-            for p in posts
-        ]
+        **_serialize_topic_summary(topic_item),
+        "related_posts": [_serialize_related_post(post_item) for post_item in related_posts],
     }
 
+
+def _serialize_topic_summary(topic_item: Topic) -> Dict[str, Any]:
+    return {
+        "id": topic_item.id,
+        "name": topic_item.name,
+        "keywords": topic_item.keywords,
+        "post_count": topic_item.post_count,
+        "first_seen": topic_item.first_seen.isoformat() if topic_item.first_seen else None,
+        "last_seen": topic_item.last_seen.isoformat() if topic_item.last_seen else None,
+    }
+
+
+def _serialize_related_post(post_item: Post) -> Dict[str, Any]:
+    return {
+        "id": str(post_item.id),
+        "author_username": post_item.author_username,
+        "content": post_item.content,
+        "sentiment": post_item.sentiment,
+        "likes": post_item.likes,
+        "posted_at": post_item.posted_at.isoformat() if post_item.posted_at else None,
+    }

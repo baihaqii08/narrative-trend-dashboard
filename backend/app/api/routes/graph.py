@@ -1,172 +1,665 @@
+from typing import Any, Dict, List, Optional, Set
 from fastapi import APIRouter, Depends, Query
 from sqlalchemy.orm import Session
-from typing import Optional, List, Dict, Any
-
 from app.api.dependencies import get_db
-from models import Topic, Post, Entity
-from app.core.database import neo4j_driver, get_neo4j_driver
+from app.core.cache import in_memory_cache
+from app.core.database import get_neo4j_driver
+
 
 router = APIRouter(tags=["Graph"])
 
-# 8 Tipe Entity Resmi sesuai Spesifikasi Dataset MBG (KG_MBG.ipynb)
-ENTITY_COLOR_MAP = {
-    "topic": "#f97316",         # Orange
-    "person": "#8b5cf6",        # Purple
-    "organization": "#3b82f6",  # Blue
-    "geopolitical": "#06b6d4",  # Cyan
-    "location": "#10b981",      # Emerald Green
-    "product": "#eab308",       # Amber
-    "event": "#ec4899",         # Pink
-    "norm": "#ef4444",          # Red
-    "facility": "#14b8a6",      # Teal
+CACHE_TTL_SECONDS = 120
+TOPIC_NODE_DEFAULT_WEIGHT = 40
+TOPIC_NODE_DEFAULT_SIZE = 32
+ENTITY_NODE_MIN_SIZE = 16
+ENTITY_NODE_MAX_SIZE = 36
+ENTITY_SIZE_DIVISOR = 20
+DEFAULT_GRAPH_NODE_LIMIT = 300
+
+ENTITY_COLOR_MAP: Dict[str, str] = {
+    "topic": "#f97316",
+    "person": "#8b5cf6",
+    "organization": "#3b82f6",
+    "geopolitical": "#06b6d4",
+    "location": "#10b981",
+    "product": "#eab308",
+    "event": "#ec4899",
+    "norm": "#ef4444",
+    "facility": "#14b8a6",
 }
 
-# 128 Entity Resmi MBG dari Spesifikasi Dataset
-MBG_ENTITIES_FALLBACK = [
-    # person (19)
-    {"name": "prabowo", "type": "person", "mention_count": 574, "topic": "Program Makan Bergizi Gratis (MBG)"},
-    {"name": "prabowo subianto", "type": "person", "mention_count": 490, "topic": "Program Makan Bergizi Gratis (MBG)"},
-    {"name": "zulkifli hasan", "type": "person", "mention_count": 71, "topic": "Evaluasi Program Makan Bergizi Gratis"},
-    {"name": "budi gunadi sadikin", "type": "person", "mention_count": 25, "topic": "Evaluasi Program Makan Bergizi Gratis"},
-    {"name": "sudaryono", "type": "person", "mention_count": 15, "topic": "Evaluasi Program Makan Bergizi Gratis"},
-    {"name": "tito", "type": "person", "mention_count": 13, "topic": "Evaluasi Program Makan Bergizi Gratis"},
-    {"name": "yahya zaini", "type": "person", "mention_count": 13, "topic": "Kontroversi Program Makan Bergizi Gratis MBG"},
-    {"name": "zulkifli hasan zulhas", "type": "person", "mention_count": 13, "topic": "Evaluasi Program Makan Bergizi Gratis"},
-    {"name": "amithya ratnanggani sirraduhita", "type": "person", "mention_count": 12, "topic": "Kontroversi Program Makan Bergizi Gratis MBG"},
-    {"name": "hasan", "type": "person", "mention_count": 8, "topic": "Program Makan Bergizi Gratis di Kendari"},
-    {"name": "tito karnavian", "type": "person", "mention_count": 8, "topic": "Evaluasi Program Makan Bergizi Gratis"},
-    {"name": "zulhas", "type": "person", "mention_count": 8, "topic": "Evaluasi Program Makan Bergizi Gratis"},
-    {"name": "andi amran sulaiman", "type": "person", "mention_count": 7, "topic": "Evaluasi Program Makan Bergizi Gratis"},
-    {"name": "sri mulyani", "type": "person", "mention_count": 7, "topic": "Program Makan Bergizi Gratis di Kendari"},
-    {"name": "hasan nasbi", "type": "person", "mention_count": 6, "topic": "Program Makan Bergizi Gratis di Kendari"},
-    {"name": "agus haris", "type": "person", "mention_count": 5, "topic": "Kontroversi Program Makan Bergizi Gratis MBG"},
-    {"name": "charles", "type": "person", "mention_count": 5, "topic": "Kontroversi Program Makan Bergizi Gratis MBG"},
-    {"name": "rachmat", "type": "person", "mention_count": 5, "topic": "Evaluasi Program Makan Bergizi Gratis"},
-    {"name": "sultan", "type": "person", "mention_count": 3, "topic": "Kontroversi Program Makan Bergizi Gratis MBG"},
+TOPIC_LABEL_MAP: Dict[str, str] = {
+    "Program Makan Bergizi Gratis (MBG)": "Program Makan Bergizi Gratis (MBG)",
+    "Evaluasi Program Makan Bergizi Gratis": "Evaluasi Program Makan Bergizi Gratis",
+    "Kontroversi Program Makan Bergizi Gratis MBG": "Kontroversi Program Makan Bergizi Gratis MBG",
+    "Program Makan Bergizi Sekolah": "Program Makan Bergizi Sekolah",
+    "Program Makan Bergizi Gratis Indonesia": "Program Makan Bergizi Gratis Indonesia",
+    "Pemanfaatan susu segar nasional": "Pemanfaatan susu segar nasional",
+    "Program Makan Bergizi Gratis di Kendari": "Program Makan Bergizi Gratis di Kendari",
+    "Program Makan Bergizi Gratis": "Program Makan Bergizi Gratis",
+    "Lainnya / Tidak terklasifikasi": "Lainnya / Tidak terklasifikasi",
+}
 
-    # organization (12)
-    {"name": "badan gizi nasional bgn", "type": "organization", "mention_count": 285, "topic": "Evaluasi Program Makan Bergizi Gratis"},
-    {"name": "bgn", "type": "organization", "mention_count": 70, "topic": "Evaluasi Program Makan Bergizi Gratis"},
-    {"name": "kepala bgn", "type": "organization", "mention_count": 50, "topic": "Evaluasi Program Makan Bergizi Gratis"},
-    {"name": "pt garuda muda karya", "type": "organization", "mention_count": 22, "topic": "Evaluasi Program Makan Bergizi Gratis"},
-    {"name": "mbg watch", "type": "organization", "mention_count": 17, "topic": "Kontroversi Program Makan Bergizi Gratis MBG"},
-    {"name": "mitra dapur bigboss", "type": "organization", "mention_count": 13, "topic": "Program Makan Bergizi Gratis Indonesia"},
-    {"name": "sppg hilir kantor iv ngabang", "type": "organization", "mention_count": 13, "topic": "Program Makan Bergizi Gratis Indonesia"},
-    {"name": "kompas com", "type": "organization", "mention_count": 12, "topic": "Evaluasi Program Makan Bergizi Gratis"},
-    {"name": "rri", "type": "organization", "mention_count": 5, "topic": "Program Makan Bergizi Gratis di Kendari"},
-    {"name": "tvone", "type": "organization", "mention_count": 5, "topic": "Pemanfaatan susu segar nasional"},
-    {"name": "yonsei university", "type": "organization", "mention_count": 4, "topic": "Program Makan Bergizi Gratis Indonesia"},
-    {"name": "japan international cooperation agency jica", "type": "organization", "mention_count": 3, "topic": "Program Makan Bergizi Gratis Indonesia"},
 
-    # geopolitical (26)
-    {"name": "jakarta", "type": "geopolitical", "mention_count": 172, "topic": "Evaluasi Program Makan Bergizi Gratis"},
-    {"name": "papua", "type": "geopolitical", "mention_count": 70, "topic": "Evaluasi Program Makan Bergizi Gratis"},
-    {"name": "jepang", "type": "geopolitical", "mention_count": 64, "topic": "Program Makan Bergizi Gratis Indonesia"},
-    {"name": "jawa barat", "type": "geopolitical", "mention_count": 26, "topic": "Evaluasi Program Makan Bergizi Gratis"},
-    {"name": "ntt", "type": "geopolitical", "mention_count": 23, "topic": "Evaluasi Program Makan Bergizi Gratis"},
-    {"name": "india", "type": "geopolitical", "mention_count": 21, "topic": "Evaluasi Program Makan Bergizi Gratis"},
-    {"name": "jawa timur", "type": "geopolitical", "mention_count": 20, "topic": "Evaluasi Program Makan Bergizi Gratis"},
-    {"name": "jawa tengah", "type": "geopolitical", "mention_count": 19, "topic": "Evaluasi Program Makan Bergizi Gratis"},
-    {"name": "jawa", "type": "geopolitical", "mention_count": 18, "topic": "Evaluasi Program Makan Bergizi Gratis"},
-    {"name": "australia", "type": "geopolitical", "mention_count": 17, "topic": "Evaluasi Program Makan Bergizi Gratis"},
-    {"name": "malang", "type": "geopolitical", "mention_count": 16, "topic": "Evaluasi Program Makan Bergizi Gratis"},
-    {"name": "maluku", "type": "geopolitical", "mention_count": 16, "topic": "Evaluasi Program Makan Bergizi Gratis"},
-    {"name": "aceh", "type": "geopolitical", "mention_count": 15, "topic": "Evaluasi Program Makan Bergizi Gratis"},
-    {"name": "makassar", "type": "geopolitical", "mention_count": 14, "topic": "Evaluasi Program Makan Bergizi Gratis"},
-    {"name": "korea", "type": "geopolitical", "mention_count": 13, "topic": "Program Makan Bergizi Gratis Indonesia"},
-    {"name": "amerika serikat", "type": "geopolitical", "mention_count": 12, "topic": "Evaluasi Program Makan Bergizi Gratis"},
-    {"name": "eropa", "type": "geopolitical", "mention_count": 10, "topic": "Program Makan Bergizi Gratis Indonesia"},
-    {"name": "sulawesi selatan", "type": "geopolitical", "mention_count": 10, "topic": "Evaluasi Program Makan Bergizi Gratis"},
-    {"name": "blitar", "type": "geopolitical", "mention_count": 7, "topic": "Evaluasi Program Makan Bergizi Gratis"},
-    {"name": "jayapura", "type": "geopolitical", "mention_count": 7, "topic": "Evaluasi Program Makan Bergizi Gratis"},
-    {"name": "kendari", "type": "geopolitical", "mention_count": 6, "topic": "Program Makan Bergizi Gratis di Kendari"},
-    {"name": "madura", "type": "geopolitical", "mention_count": 5, "topic": "Evaluasi Program Makan Bergizi Gratis"},
-    {"name": "sulawesi", "type": "geopolitical", "mention_count": 5, "topic": "Evaluasi Program Makan Bergizi Gratis"},
-    {"name": "swedia", "type": "geopolitical", "mention_count": 5, "topic": "Evaluasi Program Makan Bergizi Gratis"},
-    {"name": "bangkalan", "type": "geopolitical", "mention_count": 4, "topic": "Evaluasi Program Makan Bergizi Gratis"},
-    {"name": "selandia baru", "type": "geopolitical", "mention_count": 3, "topic": "Evaluasi Program Makan Bergizi Gratis"},
+@router.get("")
+@router.get("/")
+@router.get("/data")
+@router.get("/network")
+@in_memory_cache(ttl_seconds=CACHE_TTL_SECONDS)
+def get_graph_data(
+    platform: Optional[str] = Query(None),
+    time_filter: Optional[str] = Query(None),
+    entity_type: Optional[str] = Query(None, description="Filter by entity category"),
+    type: Optional[str] = Query(None, description="Alias for entity_type"),
+    topic: Optional[str] = Query(None, description="Filter by topic name"),
+    min_freq: Optional[int] = Query(0, ge=0, description="Minimum mention frequency"),
+    min_weight: Optional[int] = Query(None, ge=0, description="Alias for min_freq"),
+    limit: int = Query(DEFAULT_GRAPH_NODE_LIMIT, ge=10, le=1000),
+    db: Session = Depends(get_db),
+) -> Dict[str, Any]:
+    """Return Knowledge Graph nodes and edges from Neo4j (port 7687), or the verified MBG dataset fallback."""
+    resolved_entity_type = entity_type or type
+    resolved_min_frequency = min_freq if min_freq is not None else (min_weight or 0)
 
-    # location (5)
-    {"name": "makodim 0809 kota bontang", "type": "location", "mention_count": 4, "topic": "Kontroversi Program Makan Bergizi Gratis MBG"},
-    {"name": "batu besar", "type": "location", "mention_count": 3, "topic": "Lainnya / Tidak terklasifikasi"},
-    {"name": "httpurl", "type": "location", "mention_count": 3, "topic": "Lainnya / Tidak terklasifikasi"},
-    {"name": "kav senjulung", "type": "location", "mention_count": 3, "topic": "Lainnya / Tidak terklasifikasi"},
-    {"name": "nongsa c", "type": "location", "mention_count": 3, "topic": "Lainnya / Tidak terklasifikasi"},
+    live_graph = fetch_live_neo4j_graph(
+        min_frequency=resolved_min_frequency,
+        entity_type=resolved_entity_type,
+        topic=topic,
+    )
+    if live_graph is not None:
+        return live_graph
 
-    # product (23)
-    {"name": "nasi putih", "type": "product", "mention_count": 44, "topic": "Program Makan Bergizi Sekolah"},
-    {"name": "tahu goreng", "type": "product", "mention_count": 35, "topic": "Program Makan Bergizi Sekolah"},
-    {"name": "telur", "type": "product", "mention_count": 27, "topic": "Program Makan Bergizi Sekolah"},
-    {"name": "tahu", "type": "product", "mention_count": 23, "topic": "Program Makan Bergizi Sekolah"},
-    {"name": "telur rebus", "type": "product", "mention_count": 23, "topic": "Program Makan Bergizi Sekolah"},
-    {"name": "susu sapi", "type": "product", "mention_count": 22, "topic": "Pemanfaatan susu segar nasional"},
-    {"name": "susu", "type": "product", "mention_count": 17, "topic": "Pemanfaatan susu segar nasional"},
-    {"name": "susu pasteurisasi", "type": "product", "mention_count": 15, "topic": "Pemanfaatan susu segar nasional"},
-    {"name": "susu ikan", "type": "product", "mention_count": 14, "topic": "Pemanfaatan susu segar nasional"},
-    {"name": "daging ayam", "type": "product", "mention_count": 13, "topic": "Program Makan Bergizi Sekolah"},
-    {"name": "telur ceplok", "type": "product", "mention_count": 11, "topic": "Program Makan Bergizi Sekolah"},
-    {"name": "telur ayam", "type": "product", "mention_count": 10, "topic": "Program Makan Bergizi Sekolah"},
-    {"name": "telur puyuh", "type": "product", "mention_count": 9, "topic": "Program Makan Bergizi Sekolah"},
-    {"name": "hp android", "type": "product", "mention_count": 7, "topic": "Lainnya / Tidak terklasifikasi"},
-    {"name": "instagram", "type": "product", "mention_count": 7, "topic": "Lainnya / Tidak terklasifikasi"},
-    {"name": "kamera", "type": "product", "mention_count": 7, "topic": "Lainnya / Tidak terklasifikasi"},
-    {"name": "telur dadar", "type": "product", "mention_count": 7, "topic": "Program Makan Bergizi Sekolah"},
-    {"name": "susu kambing", "type": "product", "mention_count": 6, "topic": "Pemanfaatan susu segar nasional"},
-    {"name": "susu pasteurisasi uht", "type": "product", "mention_count": 5, "topic": "Pemanfaatan susu segar nasional"},
-    {"name": "susu segar", "type": "product", "mention_count": 5, "topic": "Pemanfaatan susu segar nasional"},
-    {"name": "susu kerbau", "type": "product", "mention_count": 4, "topic": "Pemanfaatan susu segar nasional"},
-    {"name": "susu steril full cream plain", "type": "product", "mention_count": 4, "topic": "Pemanfaatan susu segar nasional"},
-    {"name": "susu uht susu steril full cream plain", "type": "product", "mention_count": 4, "topic": "Pemanfaatan susu segar nasional"},
+    return build_mbg_graph_data(
+        min_frequency=resolved_min_frequency,
+        entity_type=resolved_entity_type,
+        topic=topic,
+    )
 
-    # event (10)
-    {"name": "pilpres 2024", "type": "event", "mention_count": 15, "topic": "Program Makan Bergizi Gratis (MBG)"},
-    {"name": "2045", "type": "event", "mention_count": 12, "topic": "Program Makan Bergizi Gratis Indonesia"},
-    {"name": "lampung", "type": "event", "mention_count": 11, "topic": "Evaluasi Program Makan Bergizi Gratis"},
-    {"name": "sidang bersama", "type": "event", "mention_count": 11, "topic": "Program Makan Bergizi Gratis (MBG)"},
-    {"name": "sidang tahunan", "type": "event", "mention_count": 11, "topic": "Program Makan Bergizi Gratis (MBG)"},
-    {"name": "eastern economic forum eef ke 11", "type": "event", "mention_count": 9, "topic": "Program Makan Bergizi Gratis (MBG)"},
-    {"name": "sidang tahunan mpr", "type": "event", "mention_count": 9, "topic": "Program Makan Bergizi Gratis (MBG)"},
-    {"name": "seminar koperasi desa kelurahan merah putih", "type": "event", "mention_count": 8, "topic": "Evaluasi Program Makan Bergizi Gratis"},
-    {"name": "seminar nasional koperasi desa kelurahan merah putih kdkmp", "type": "event", "mention_count": 5, "topic": "Evaluasi Program Makan Bergizi Gratis"},
-    {"name": "seminar koperasi desa kelurahan merah putih kdkmp", "type": "event", "mention_count": 4, "topic": "Evaluasi Program Makan Bergizi Gratis"},
 
-    # norm (33)
-    {"name": "dpr", "type": "norm", "mention_count": 90, "topic": "Kontroversi Program Makan Bergizi Gratis MBG"},
-    {"name": "presiden ri", "type": "norm", "mention_count": 58, "topic": "Program Makan Bergizi Gratis (MBG)"},
-    {"name": "polri", "type": "norm", "mention_count": 54, "topic": "Kontroversi Program Makan Bergizi Gratis MBG"},
-    {"name": "pemerintah pusat", "type": "norm", "mention_count": 37, "topic": "Evaluasi Program Makan Bergizi Gratis"},
-    {"name": "menteri keuangan", "type": "norm", "mention_count": 36, "topic": "Program Makan Bergizi Gratis di Kendari"},
-    {"name": "komisi ix dpr ri", "type": "norm", "mention_count": 31, "topic": "Kontroversi Program Makan Bergizi Gratis MBG"},
-    {"name": "dpr ri", "type": "norm", "mention_count": 28, "topic": "Kontroversi Program Makan Bergizi Gratis MBG"},
-    {"name": "ketua dprd kota malang", "type": "norm", "mention_count": 24, "topic": "Kontroversi Program Makan Bergizi Gratis MBG"},
-    {"name": "tni", "type": "norm", "mention_count": 23, "topic": "Kontroversi Program Makan Bergizi Gratis MBG"},
-    {"name": "wakil ketua komisi ix dpr ri", "type": "norm", "mention_count": 22, "topic": "Kontroversi Program Makan Bergizi Gratis MBG"},
-    {"name": "kementerian pertahanan", "type": "norm", "mention_count": 19, "topic": "Kontroversi Program Makan Bergizi Gratis MBG"},
-    {"name": "kementerian kesehatan", "type": "norm", "mention_count": 18, "topic": "Kontroversi Program Makan Bergizi Gratis MBG"},
-    {"name": "ketua dpd ri", "type": "norm", "mention_count": 13, "topic": "Kontroversi Program Makan Bergizi Gratis MBG"},
-    {"name": "pdip", "type": "norm", "mention_count": 13, "topic": "Program Makan Bergizi Gratis (MBG)"},
-    {"name": "menteri dalam negeri", "type": "norm", "mention_count": 12, "topic": "Evaluasi Program Makan Bergizi Gratis"},
-    {"name": "menteri kesehatan", "type": "norm", "mention_count": 11, "topic": "Evaluasi Program Makan Bergizi Gratis"},
-    {"name": "wakil presiden", "type": "norm", "mention_count": 9, "topic": "Program Makan Bergizi Gratis"},
-    {"name": "kementerian agama", "type": "norm", "mention_count": 8, "topic": "Kontroversi Program Makan Bergizi Gratis MBG"},
-    {"name": "kpu", "type": "norm", "mention_count": 8, "topic": "Program Makan Bergizi Gratis (MBG)"},
-    {"name": "gerindra", "type": "norm", "mention_count": 6, "topic": "Program Makan Bergizi Gratis (MBG)"},
-    {"name": "komisi ii dpr ri", "type": "norm", "mention_count": 6, "topic": "Kontroversi Program Makan Bergizi Gratis MBG"},
-    {"name": "menteri pertanian", "type": "norm", "mention_count": 6, "topic": "Evaluasi Program Makan Bergizi Gratis"},
-    {"name": "wali kota solo", "type": "norm", "mention_count": 6, "topic": "Program Makan Bergizi Gratis"},
-    {"name": "wakil presiden wapres", "type": "norm", "mention_count": 5, "topic": "Program Makan Bergizi Gratis"},
-    {"name": "wakil wali kota bontang", "type": "norm", "mention_count": 5, "topic": "Kontroversi Program Makan Bergizi Gratis MBG"},
-    {"name": "pemkab malang", "type": "norm", "mention_count": 4, "topic": "Evaluasi Program Makan Bergizi Gratis"},
-    {"name": "wakil menteri pertanian", "type": "norm", "mention_count": 4, "topic": "Evaluasi Program Makan Bergizi Gratis"},
-    {"name": "wapres ri", "type": "norm", "mention_count": 4, "topic": "Program Makan Bergizi Gratis"},
-    {"name": "kemenhan", "type": "norm", "mention_count": 3, "topic": "Kontroversi Program Makan Bergizi Gratis MBG"},
-    {"name": "kementerian pekerjaan umum", "type": "norm", "mention_count": 3, "topic": "Kontroversi Program Makan Bergizi Gratis MBG"},
-    {"name": "kementerian sosial", "type": "norm", "mention_count": 3, "topic": "Kontroversi Program Makan Bergizi Gratis MBG"},
-    {"name": "menteri koordinator bidang pangan republik indonesia", "type": "norm", "mention_count": 3, "topic": "Evaluasi Program Makan Bergizi Gratis"},
-    {"name": "menteri perencanaan pembangunan nasional ppn kepala bappenas", "type": "norm", "mention_count": 3, "topic": "Evaluasi Program Makan Bergizi Gratis"}
+@router.get("/nodes")
+def get_graph_nodes(
+    entity_type: Optional[str] = Query(None),
+    topic: Optional[str] = Query(None),
+    min_freq: Optional[int] = Query(0),
+    db: Session = Depends(get_db),
+) -> List[Dict[str, Any]]:
+    graph_data = get_graph_data(
+        topic=topic,
+        entity_type=entity_type,
+        min_freq=min_freq,
+        db=db,
+    )
+    return graph_data.get("nodes", [])
+
+
+@router.get("/edges")
+def get_graph_edges(
+    entity_type: Optional[str] = Query(None),
+    topic: Optional[str] = Query(None),
+    min_freq: Optional[int] = Query(0),
+    db: Session = Depends(get_db),
+) -> List[Dict[str, Any]]:
+    graph_data = get_graph_data(
+        topic=topic,
+        entity_type=entity_type,
+        min_freq=min_freq,
+        db=db,
+    )
+    return graph_data.get("edges", [])
+
+
+@router.get("/node/{node_id}")
+def get_node_detail(
+    node_id: str,
+    db: Session = Depends(get_db),
+) -> Dict[str, Any]:
+    graph_data = get_graph_data(db=db)
+    for node_record in graph_data.get("nodes", []):
+        if node_record.get("id") == node_id or node_record.get("name") == node_id:
+            return node_record
+    return {"id": node_id, "name": node_id, "status": "not_found"}
+
+
+def fetch_live_neo4j_graph(
+    min_frequency: Optional[int] = 0,
+    entity_type: Optional[str] = None,
+    topic: Optional[str] = None,
+) -> Optional[Dict[str, Any]]:
+    driver = get_neo4j_driver()
+    if not driver:
+        return None
+
+    try:
+        with driver.session() as session:
+            topics_records, entities_records, belongs_to_records, co_occurs_records = _query_neo4j_records(session)
+            if not entities_records:
+                return None
+
+            return _assemble_graph_payload(
+                source_label="neo4j_port_7687",
+                topic_names=_extract_topic_names_from_neo4j(topics_records),
+                topic_keywords_by_name=_extract_topic_keywords_from_neo4j(topics_records),
+                entities_by_name=_normalize_neo4j_entities(entities_records),
+                belongs_to_pairs=_normalize_belongs_to_records(belongs_to_records),
+                co_occurrence_records=co_occurs_records,
+                min_frequency=int(min_frequency or 0),
+                entity_type=entity_type,
+                topic=topic,
+            )
+    except Exception as neo4j_error:
+        print(f"[NEO4J LIVE ERROR] {neo4j_error}")
+        return None
+
+
+def build_mbg_graph_data(
+    min_frequency: Optional[int] = 0,
+    entity_type: Optional[str] = None,
+    topic: Optional[str] = None,
+) -> Dict[str, Any]:
+    entities_by_name = {
+        entity["name"]: {
+            "name": entity["name"],
+            "type": entity["type"].lower(),
+            "mention_count": int(entity["mention_count"]),
+            "topic": entity["topic"],
+        }
+        for entity in MBG_ENTITIES_FALLBACK
+    }
+    belongs_to_pairs = [
+        {"source": entity["name"], "target": entity["topic"]}
+        for entity in MBG_ENTITIES_FALLBACK
+    ]
+
+    return _assemble_graph_payload(
+        source_label="fallback_mbg_dataset",
+        topic_names=MBG_TOPICS_FALLBACK,
+        topic_keywords_by_name={},
+        entities_by_name=entities_by_name,
+        belongs_to_pairs=belongs_to_pairs,
+        co_occurrence_records=MBG_CO_OCCURS_FALLBACK,
+        min_frequency=int(min_frequency or 0),
+        entity_type=entity_type,
+        topic=topic,
+    )
+
+
+def format_node(
+    raw_name: str,
+    node_type: str,
+    mention_count: int,
+    topic: Optional[str] = None,
+    keywords: Optional[List[str]] = None,
+) -> Dict[str, Any]:
+    normalized_type = node_type.lower()
+    node_color = ENTITY_COLOR_MAP.get(normalized_type, "#64748b")
+    is_topic_node = normalized_type == "topic"
+
+    if is_topic_node:
+        node_size = TOPIC_NODE_DEFAULT_SIZE
+        weight_value = TOPIC_NODE_DEFAULT_WEIGHT
+    else:
+        node_size = max(
+            ENTITY_NODE_MIN_SIZE,
+            min(ENTITY_NODE_MAX_SIZE, ENTITY_NODE_MIN_SIZE + (mention_count // ENTITY_SIZE_DIVISOR)),
+        )
+        weight_value = mention_count
+
+    clean_label = raw_name.strip()
+    node_id = f"topic_{clean_label}" if is_topic_node else f"entity_{clean_label}"
+    resolved_topic_label = TOPIC_LABEL_MAP.get(topic or "", topic or clean_label)
+
+    return {
+        "id": node_id,
+        "name": clean_label,
+        "label": clean_label,
+        "title": f"{clean_label} ({node_type.capitalize()} - {weight_value} mentions)",
+        "category": node_type.capitalize(),
+        "type": normalized_type,
+        "group": normalized_type,
+        "val": weight_value,
+        "value": weight_value,
+        "weight": weight_value,
+        "frequency": weight_value,
+        "mention_count": weight_value,
+        "size": node_size,
+        "color": node_color,
+        "topic": topic,
+        "topicId": f"topic_{topic}" if topic else (node_id if is_topic_node else ""),
+        "topicLabel": resolved_topic_label,
+        "keywords": keywords or [],
+    }
+
+
+def _query_neo4j_records(session: Any):
+    topics_records = session.run(
+        "MATCH (t:Topic) RETURN t.name as name, t.parent_topic as parent_topic, "
+        "t.n_communities as n_communities, t.keywords as keywords"
+    ).data()
+    entities_records = session.run(
+        "MATCH (e:Entity) RETURN e.name as name, e.type as type, "
+        "e.mention_count as mention_count, e.community_id as community_id, e.topic as topic"
+    ).data()
+    belongs_to_records = session.run(
+        "MATCH (e:Entity)-[r:BELONGS_TO_TOPIC]->(t:Topic) "
+        "RETURN e.name as source, t.name as target, type(r) as type"
+    ).data()
+    co_occurs_records = session.run(
+        "MATCH (a:Entity)-[r:CO_OCCURS_WITH]->(b:Entity) "
+        "RETURN a.name as source, b.name as target, type(r) as type, "
+        "r.weight as weight, r.cooccur as cooccur, r.pmi as pmi"
+    ).data()
+    return topics_records, entities_records, belongs_to_records, co_occurs_records
+
+
+def _extract_topic_names_from_neo4j(topics_records: List[Dict[str, Any]]) -> List[str]:
+    return [
+        (record.get("name") or "").strip()
+        for record in topics_records
+        if (record.get("name") or "").strip()
+    ]
+
+
+def _extract_topic_keywords_from_neo4j(topics_records: List[Dict[str, Any]]) -> Dict[str, List[str]]:
+    return {
+        (record.get("name") or "").strip(): (record.get("keywords") or [])
+        for record in topics_records
+        if (record.get("name") or "").strip()
+    }
+
+
+def _normalize_neo4j_entities(entities_records: List[Dict[str, Any]]) -> Dict[str, Dict[str, Any]]:
+    normalized_entities: Dict[str, Dict[str, Any]] = {}
+    for record in entities_records:
+        entity_name = (record.get("name") or "").strip()
+        if not entity_name:
+            continue
+        normalized_entities[entity_name] = {
+            "name": entity_name,
+            "type": (record.get("type") or "entity").lower(),
+            "mention_count": int(record.get("mention_count") or 1),
+            "topic": (record.get("topic") or "").strip() or None,
+        }
+    return normalized_entities
+
+
+def _normalize_belongs_to_records(belongs_to_records: List[Dict[str, Any]]) -> List[Dict[str, str]]:
+    return [
+        {
+            "source": (record.get("source") or "").strip(),
+            "target": (record.get("target") or "").strip(),
+        }
+        for record in belongs_to_records
+        if (record.get("source") or "").strip() and (record.get("target") or "").strip()
+    ]
+
+
+def _assemble_graph_payload(
+    source_label: str,
+    topic_names: List[str],
+    topic_keywords_by_name: Dict[str, List[str]],
+    entities_by_name: Dict[str, Dict[str, Any]],
+    belongs_to_pairs: List[Dict[str, str]],
+    co_occurrence_records: List[Dict[str, Any]],
+    min_frequency: int,
+    entity_type: Optional[str],
+    topic: Optional[str],
+) -> Dict[str, Any]:
+    active_type_filter = _normalize_optional_filter(entity_type)
+    active_topic_filter = _normalize_optional_filter(topic)
+
+    nodes_by_id: Dict[str, Dict[str, Any]] = {}
+    _add_topic_nodes(
+        nodes_by_id=nodes_by_id,
+        topic_names=topic_names,
+        topic_keywords_by_name=topic_keywords_by_name,
+        active_topic_filter=active_topic_filter,
+    )
+
+    matched_entity_names = _add_matching_entity_nodes(
+        nodes_by_id=nodes_by_id,
+        entities_by_name=entities_by_name,
+        active_type_filter=active_type_filter,
+        active_topic_filter=active_topic_filter,
+        min_frequency=min_frequency,
+    )
+
+    if active_type_filter and active_type_filter != "topic":
+        _add_co_occurring_neighbor_nodes(
+            nodes_by_id=nodes_by_id,
+            matched_entity_names=matched_entity_names,
+            entities_by_name=entities_by_name,
+            co_occurrence_records=co_occurrence_records,
+            min_frequency=min_frequency,
+        )
+
+    edges_list = _build_graph_edges(
+        nodes_by_id=nodes_by_id,
+        belongs_to_pairs=belongs_to_pairs,
+        co_occurrence_records=co_occurrence_records,
+    )
+    nodes_list = list(nodes_by_id.values())
+
+    return {
+        "source": source_label,
+        "total_nodes": len(nodes_list),
+        "total_edges": len(edges_list),
+        "nodes": nodes_list,
+        "edges": edges_list,
+        "links": edges_list,
+        "data": {
+            "nodes": nodes_list,
+            "edges": edges_list,
+            "links": edges_list,
+        },
+    }
+
+
+def _normalize_optional_filter(raw_filter: Optional[str]) -> Optional[str]:
+    if not raw_filter:
+        return None
+    cleaned = raw_filter.strip().lower()
+    if not cleaned or cleaned in ("all", "semua"):
+        return None
+    return cleaned
+
+
+def _add_topic_nodes(
+    nodes_by_id: Dict[str, Dict[str, Any]],
+    topic_names: List[str],
+    topic_keywords_by_name: Dict[str, List[str]],
+    active_topic_filter: Optional[str],
+) -> None:
+    for topic_name in topic_names:
+        if active_topic_filter and topic_name.lower() != active_topic_filter:
+            continue
+        topic_node = format_node(
+            raw_name=topic_name,
+            node_type="topic",
+            mention_count=TOPIC_NODE_DEFAULT_WEIGHT,
+            keywords=topic_keywords_by_name.get(topic_name),
+        )
+        nodes_by_id[topic_node["id"]] = topic_node
+
+
+def _add_matching_entity_nodes(
+    nodes_by_id: Dict[str, Dict[str, Any]],
+    entities_by_name: Dict[str, Dict[str, Any]],
+    active_type_filter: Optional[str],
+    active_topic_filter: Optional[str],
+    min_frequency: int,
+) -> Set[str]:
+    matched_entity_names: Set[str] = set()
+    for entity_name, entity_info in entities_by_name.items():
+        entity_category = entity_info["type"]
+        mention_count = entity_info["mention_count"]
+        entity_topic = entity_info["topic"]
+
+        if active_type_filter and active_type_filter != "topic" and entity_category != active_type_filter:
+            continue
+        if active_topic_filter and entity_topic and entity_topic.lower() != active_topic_filter:
+            continue
+        if min_frequency > 0 and mention_count < min_frequency:
+            continue
+
+        matched_entity_names.add(entity_name)
+        entity_node = format_node(
+            raw_name=entity_name,
+            node_type=entity_category,
+            mention_count=mention_count,
+            topic=entity_topic,
+        )
+        nodes_by_id[entity_node["id"]] = entity_node
+
+    return matched_entity_names
+
+
+def _add_co_occurring_neighbor_nodes(
+    nodes_by_id: Dict[str, Dict[str, Any]],
+    matched_entity_names: Set[str],
+    entities_by_name: Dict[str, Dict[str, Any]],
+    co_occurrence_records: List[Dict[str, Any]],
+    min_frequency: int,
+) -> None:
+    for co_occurrence in co_occurrence_records:
+        source_name = (co_occurrence.get("source") or "").strip()
+        target_name = (co_occurrence.get("target") or "").strip()
+
+        neighbor_name: Optional[str] = None
+        if source_name in matched_entity_names and target_name in entities_by_name:
+            neighbor_name = target_name
+        elif target_name in matched_entity_names and source_name in entities_by_name:
+            neighbor_name = source_name
+
+        if not neighbor_name:
+            continue
+
+        neighbor_info = entities_by_name[neighbor_name]
+        if min_frequency > 0 and neighbor_info["mention_count"] < min_frequency:
+            continue
+
+        neighbor_node = format_node(
+            raw_name=neighbor_info["name"],
+            node_type=neighbor_info["type"],
+            mention_count=neighbor_info["mention_count"],
+            topic=neighbor_info["topic"],
+        )
+        nodes_by_id[neighbor_node["id"]] = neighbor_node
+
+
+def _build_graph_edges(
+    nodes_by_id: Dict[str, Dict[str, Any]],
+    belongs_to_pairs: List[Dict[str, str]],
+    co_occurrence_records: List[Dict[str, Any]],
+) -> List[Dict[str, Any]]:
+    edges_list: List[Dict[str, Any]] = []
+
+    for pair in belongs_to_pairs:
+        source_name = pair["source"]
+        target_topic = pair["target"]
+        source_id = f"entity_{source_name}"
+        target_id = f"topic_{target_topic}"
+        if source_id in nodes_by_id and target_id in nodes_by_id:
+            edges_list.append(_create_belongs_to_topic_edge(source_name, target_topic, source_id, target_id))
+
+    for co_occurrence in co_occurrence_records:
+        source_name = (co_occurrence.get("source") or "").strip()
+        target_name = (co_occurrence.get("target") or "").strip()
+        source_id = f"entity_{source_name}"
+        target_id = f"entity_{target_name}"
+        if source_id in nodes_by_id and target_id in nodes_by_id:
+            edges_list.append(_create_co_occurs_with_edge(co_occurrence, source_name, target_name, source_id, target_id))
+
+    return edges_list
+
+
+def _create_belongs_to_topic_edge(
+    source_name: str,
+    target_topic: str,
+    source_id: str,
+    target_id: str,
+) -> Dict[str, Any]:
+    return {
+        "id": f"rel_bt_{source_name}_{target_topic}",
+        "from": source_id,
+        "to": target_id,
+        "source": source_id,
+        "target": target_id,
+        "source_name": source_name,
+        "target_name": target_topic,
+        "label": "BELONGS_TO_TOPIC",
+        "type": "BELONGS_TO_TOPIC",
+        "relationship": "BELONGS_TO_TOPIC",
+        "weight": 1,
+        "value": 1,
+        "style": "dashed",
+    }
+
+
+def _create_co_occurs_with_edge(
+    co_occurrence: Dict[str, Any],
+    source_name: str,
+    target_name: str,
+    source_id: str,
+    target_id: str,
+) -> Dict[str, Any]:
+    npmi_weight = float(co_occurrence.get("weight") or 0.5)
+    cooccur_count = int(co_occurrence.get("cooccur") or 3)
+    pmi_score = float(co_occurrence.get("pmi") or 0.0)
+
+    return {
+        "id": f"rel_co_{source_name}_{target_name}",
+        "from": source_id,
+        "to": target_id,
+        "source": source_id,
+        "target": target_id,
+        "source_name": source_name,
+        "target_name": target_name,
+        "label": f"CO_OCCURS_WITH (NPMI {npmi_weight:.2f})",
+        "type": "CO_OCCURS_WITH",
+        "relationship": "CO_OCCURS_WITH",
+        "weight": round(npmi_weight, 4),
+        "npmi": round(npmi_weight, 4),
+        "value": cooccur_count,
+        "cooccur": cooccur_count,
+        "pmi": round(pmi_score, 4),
+        "style": "solid",
+    }
+
+
+MBG_ENTITIES_FALLBACK: List[Dict[str, Any]] = [
+    {"name": "prabowo", "type": "person", "mention_count": 574, "freq": 574, "topic": "Program Makan Bergizi Gratis (MBG)"},
+    {"name": "prabowo subianto", "type": "person", "mention_count": 490, "freq": 490, "topic": "Program Makan Bergizi Gratis (MBG)"},
+    {"name": "zulkifli hasan", "type": "person", "mention_count": 71, "freq": 71, "topic": "Evaluasi Program Makan Bergizi Gratis"},
+    {"name": "budi gunadi sadikin", "type": "person", "mention_count": 25, "freq": 25, "topic": "Evaluasi Program Makan Bergizi Gratis"},
+    {"name": "sudaryono", "type": "person", "mention_count": 15, "freq": 15, "topic": "Evaluasi Program Makan Bergizi Gratis"},
+    {"name": "tito", "type": "person", "mention_count": 13, "freq": 13, "topic": "Evaluasi Program Makan Bergizi Gratis"},
+    {"name": "yahya zaini", "type": "person", "mention_count": 13, "freq": 13, "topic": "Kontroversi Program Makan Bergizi Gratis MBG"},
+    {"name": "zulkifli hasan zulhas", "type": "person", "mention_count": 13, "freq": 13, "topic": "Evaluasi Program Makan Bergizi Gratis"},
+    {"name": "amithya ratnanggani sirraduhita", "type": "person", "mention_count": 12, "freq": 12, "topic": "Kontroversi Program Makan Bergizi Gratis MBG"},
+    {"name": "hasan", "type": "person", "mention_count": 8, "freq": 8, "topic": "Program Makan Bergizi Gratis di Kendari"},
+    {"name": "tito karnavian", "type": "person", "mention_count": 8, "freq": 8, "topic": "Evaluasi Program Makan Bergizi Gratis"},
+    {"name": "zulhas", "type": "person", "mention_count": 8, "freq": 8, "topic": "Evaluasi Program Makan Bergizi Gratis"},
+    {"name": "andi amran sulaiman", "type": "person", "mention_count": 7, "freq": 7, "topic": "Evaluasi Program Makan Bergizi Gratis"},
+    {"name": "sri mulyani", "type": "person", "mention_count": 7, "freq": 7, "topic": "Program Makan Bergizi Gratis di Kendari"},
+    {"name": "hasan nasbi", "type": "person", "mention_count": 6, "freq": 6, "topic": "Program Makan Bergizi Gratis di Kendari"},
+    {"name": "agus haris", "type": "person", "mention_count": 5, "freq": 5, "topic": "Kontroversi Program Makan Bergizi Gratis MBG"},
+    {"name": "charles", "type": "person", "mention_count": 5, "freq": 5, "topic": "Kontroversi Program Makan Bergizi Gratis MBG"},
+    {"name": "rachmat", "type": "person", "mention_count": 5, "freq": 5, "topic": "Evaluasi Program Makan Bergizi Gratis"},
+    {"name": "sultan", "type": "person", "mention_count": 3, "freq": 3, "topic": "Kontroversi Program Makan Bergizi Gratis MBG"},
+    {"name": "badan gizi nasional bgn", "type": "organization", "mention_count": 285, "freq": 285, "topic": "Evaluasi Program Makan Bergizi Gratis"},
+    {"name": "bgn", "type": "organization", "mention_count": 70, "freq": 70, "topic": "Evaluasi Program Makan Bergizi Gratis"},
+    {"name": "kepala bgn", "type": "organization", "mention_count": 50, "freq": 50, "topic": "Evaluasi Program Makan Bergizi Gratis"},
+    {"name": "pt garuda muda karya", "type": "organization", "mention_count": 22, "freq": 22, "topic": "Evaluasi Program Makan Bergizi Gratis"},
+    {"name": "mbg watch", "type": "organization", "mention_count": 17, "freq": 17, "topic": "Kontroversi Program Makan Bergizi Gratis MBG"},
+    {"name": "mitra dapur bigboss", "type": "organization", "mention_count": 13, "freq": 13, "topic": "Program Makan Bergizi Gratis Indonesia"},
+    {"name": "sppg hilir kantor iv ngabang", "type": "organization", "mention_count": 13, "freq": 13, "topic": "Program Makan Bergizi Gratis Indonesia"},
+    {"name": "kompas com", "type": "organization", "mention_count": 12, "freq": 12, "topic": "Evaluasi Program Makan Bergizi Gratis"},
+    {"name": "rri", "type": "organization", "mention_count": 5, "freq": 5, "topic": "Program Makan Bergizi Gratis di Kendari"},
+    {"name": "tvone", "type": "organization", "mention_count": 5, "freq": 5, "topic": "Pemanfaatan susu segar nasional"},
+    {"name": "yonsei university", "type": "organization", "mention_count": 4, "freq": 4, "topic": "Program Makan Bergizi Gratis Indonesia"},
+    {"name": "japan international cooperation agency jica", "type": "organization", "mention_count": 3, "freq": 3, "topic": "Program Makan Bergizi Gratis Indonesia"},
+    {"name": "jakarta", "type": "geopolitical", "mention_count": 172, "freq": 172, "topic": "Evaluasi Program Makan Bergizi Gratis"},
+    {"name": "papua", "type": "geopolitical", "mention_count": 70, "freq": 70, "topic": "Evaluasi Program Makan Bergizi Gratis"},
+    {"name": "jepang", "type": "geopolitical", "mention_count": 64, "freq": 64, "topic": "Program Makan Bergizi Gratis Indonesia"},
+    {"name": "jawa barat", "type": "geopolitical", "mention_count": 26, "freq": 26, "topic": "Evaluasi Program Makan Bergizi Gratis"},
+    {"name": "ntt", "type": "geopolitical", "mention_count": 23, "freq": 23, "topic": "Evaluasi Program Makan Bergizi Gratis"},
+    {"name": "india", "type": "geopolitical", "mention_count": 21, "freq": 21, "topic": "Evaluasi Program Makan Bergizi Gratis"},
+    {"name": "jawa timur", "type": "geopolitical", "mention_count": 20, "freq": 20, "topic": "Evaluasi Program Makan Bergizi Gratis"},
+    {"name": "jawa tengah", "type": "geopolitical", "mention_count": 19, "freq": 19, "topic": "Evaluasi Program Makan Bergizi Gratis"},
+    {"name": "jawa", "type": "geopolitical", "mention_count": 18, "freq": 18, "topic": "Evaluasi Program Makan Bergizi Gratis"},
+    {"name": "australia", "type": "geopolitical", "mention_count": 17, "freq": 17, "topic": "Evaluasi Program Makan Bergizi Gratis"},
+    {"name": "malang", "type": "geopolitical", "mention_count": 16, "freq": 16, "topic": "Evaluasi Program Makan Bergizi Gratis"},
+    {"name": "maluku", "type": "geopolitical", "mention_count": 16, "freq": 16, "topic": "Evaluasi Program Makan Bergizi Gratis"},
+    {"name": "aceh", "type": "geopolitical", "mention_count": 15, "freq": 15, "topic": "Evaluasi Program Makan Bergizi Gratis"},
+    {"name": "makassar", "type": "geopolitical", "mention_count": 14, "freq": 14, "topic": "Evaluasi Program Makan Bergizi Gratis"},
+    {"name": "korea", "type": "geopolitical", "mention_count": 13, "freq": 13, "topic": "Program Makan Bergizi Gratis Indonesia"},
+    {"name": "amerika serikat", "type": "geopolitical", "mention_count": 12, "freq": 12, "topic": "Evaluasi Program Makan Bergizi Gratis"},
+    {"name": "eropa", "type": "geopolitical", "mention_count": 10, "freq": 10, "topic": "Program Makan Bergizi Gratis Indonesia"},
+    {"name": "sulawesi selatan", "type": "geopolitical", "mention_count": 10, "freq": 10, "topic": "Evaluasi Program Makan Bergizi Gratis"},
+    {"name": "blitar", "type": "geopolitical", "mention_count": 7, "freq": 7, "topic": "Evaluasi Program Makan Bergizi Gratis"},
+    {"name": "jayapura", "type": "geopolitical", "mention_count": 7, "freq": 7, "topic": "Evaluasi Program Makan Bergizi Gratis"},
+    {"name": "kendari", "type": "geopolitical", "mention_count": 6, "freq": 6, "topic": "Program Makan Bergizi Gratis di Kendari"},
+    {"name": "madura", "type": "geopolitical", "mention_count": 5, "freq": 5, "topic": "Evaluasi Program Makan Bergizi Gratis"},
+    {"name": "sulawesi", "type": "geopolitical", "mention_count": 5, "freq": 5, "topic": "Evaluasi Program Makan Bergizi Gratis"},
+    {"name": "swedia", "type": "geopolitical", "mention_count": 5, "freq": 5, "topic": "Evaluasi Program Makan Bergizi Gratis"},
+    {"name": "bangkalan", "type": "geopolitical", "mention_count": 4, "freq": 4, "topic": "Evaluasi Program Makan Bergizi Gratis"},
+    {"name": "selandia baru", "type": "geopolitical", "mention_count": 3, "freq": 3, "topic": "Evaluasi Program Makan Bergizi Gratis"},
+    {"name": "makodim 0809 kota bontang", "type": "location", "mention_count": 4, "freq": 4, "topic": "Kontroversi Program Makan Bergizi Gratis MBG"},
+    {"name": "batu besar", "type": "location", "mention_count": 3, "freq": 3, "topic": "Lainnya / Tidak terklasifikasi"},
+    {"name": "httpurl", "type": "location", "mention_count": 3, "freq": 3, "topic": "Lainnya / Tidak terklasifikasi"},
+    {"name": "kav senjulung", "type": "location", "mention_count": 3, "freq": 3, "topic": "Lainnya / Tidak terklasifikasi"},
+    {"name": "nongsa c", "type": "location", "mention_count": 3, "freq": 3, "topic": "Lainnya / Tidak terklasifikasi"},
+    {"name": "nasi putih", "type": "product", "mention_count": 44, "freq": 44, "topic": "Program Makan Bergizi Sekolah"},
+    {"name": "tahu goreng", "type": "product", "mention_count": 35, "freq": 35, "topic": "Program Makan Bergizi Sekolah"},
+    {"name": "telur", "type": "product", "mention_count": 27, "freq": 27, "topic": "Program Makan Bergizi Sekolah"},
+    {"name": "tahu", "type": "product", "mention_count": 23, "freq": 23, "topic": "Program Makan Bergizi Sekolah"},
+    {"name": "telur rebus", "type": "product", "mention_count": 23, "freq": 23, "topic": "Program Makan Bergizi Sekolah"},
+    {"name": "susu sapi", "type": "product", "mention_count": 22, "freq": 22, "topic": "Pemanfaatan susu segar nasional"},
+    {"name": "susu", "type": "product", "mention_count": 17, "freq": 17, "topic": "Pemanfaatan susu segar nasional"},
+    {"name": "susu pasteurisasi", "type": "product", "mention_count": 15, "freq": 15, "topic": "Pemanfaatan susu segar nasional"},
+    {"name": "susu ikan", "type": "product", "mention_count": 14, "freq": 14, "topic": "Pemanfaatan susu segar nasional"},
+    {"name": "daging ayam", "type": "product", "mention_count": 13, "freq": 13, "topic": "Program Makan Bergizi Sekolah"},
+    {"name": "telur ceplok", "type": "product", "mention_count": 11, "freq": 11, "topic": "Program Makan Bergizi Sekolah"},
+    {"name": "telur ayam", "type": "product", "mention_count": 10, "freq": 10, "topic": "Program Makan Bergizi Sekolah"},
+    {"name": "telur puyuh", "type": "product", "mention_count": 9, "freq": 9, "topic": "Program Makan Bergizi Sekolah"},
+    {"name": "hp android", "type": "product", "mention_count": 7, "freq": 7, "topic": "Lainnya / Tidak terklasifikasi"},
+    {"name": "instagram", "type": "product", "mention_count": 7, "freq": 7, "topic": "Lainnya / Tidak terklasifikasi"},
+    {"name": "kamera", "type": "product", "mention_count": 7, "freq": 7, "topic": "Lainnya / Tidak terklasifikasi"},
+    {"name": "telur dadar", "type": "product", "mention_count": 7, "freq": 7, "topic": "Program Makan Bergizi Sekolah"},
+    {"name": "susu kambing", "type": "product", "mention_count": 6, "freq": 6, "topic": "Pemanfaatan susu segar nasional"},
+    {"name": "susu pasteurisasi uht", "type": "product", "mention_count": 5, "freq": 5, "topic": "Pemanfaatan susu segar nasional"},
+    {"name": "susu segar", "type": "product", "mention_count": 5, "freq": 5, "topic": "Pemanfaatan susu segar nasional"},
+    {"name": "susu kerbau", "type": "product", "mention_count": 4, "freq": 4, "topic": "Pemanfaatan susu segar nasional"},
+    {"name": "susu steril full cream plain", "type": "product", "mention_count": 4, "freq": 4, "topic": "Pemanfaatan susu segar nasional"},
+    {"name": "susu uht susu steril full cream plain", "type": "product", "mention_count": 4, "freq": 4, "topic": "Pemanfaatan susu segar nasional"},
+    {"name": "pilpres 2024", "type": "event", "mention_count": 15, "freq": 15, "topic": "Program Makan Bergizi Gratis (MBG)"},
+    {"name": "2045", "type": "event", "mention_count": 12, "freq": 12, "topic": "Program Makan Bergizi Gratis Indonesia"},
+    {"name": "lampung", "type": "event", "mention_count": 11, "freq": 11, "topic": "Evaluasi Program Makan Bergizi Gratis"},
+    {"name": "sidang bersama", "type": "event", "mention_count": 11, "freq": 11, "topic": "Program Makan Bergizi Gratis (MBG)"},
+    {"name": "sidang tahunan", "type": "event", "mention_count": 11, "freq": 11, "topic": "Program Makan Bergizi Gratis (MBG)"},
+    {"name": "eastern economic forum eef ke 11", "type": "event", "mention_count": 9, "freq": 9, "topic": "Program Makan Bergizi Gratis (MBG)"},
+    {"name": "sidang tahunan mpr", "type": "event", "mention_count": 9, "freq": 9, "topic": "Program Makan Bergizi Gratis (MBG)"},
+    {"name": "seminar koperasi desa kelurahan merah putih", "type": "event", "mention_count": 8, "freq": 8, "topic": "Evaluasi Program Makan Bergizi Gratis"},
+    {"name": "seminar nasional koperasi desa kelurahan merah putih kdkmp", "type": "event", "mention_count": 5, "freq": 5, "topic": "Evaluasi Program Makan Bergizi Gratis"},
+    {"name": "seminar koperasi desa kelurahan merah putih kdkmp", "type": "event", "mention_count": 4, "freq": 4, "topic": "Evaluasi Program Makan Bergizi Gratis"},
+    {"name": "dpr", "type": "norm", "mention_count": 90, "freq": 90, "topic": "Kontroversi Program Makan Bergizi Gratis MBG"},
+    {"name": "presiden ri", "type": "norm", "mention_count": 58, "freq": 58, "topic": "Program Makan Bergizi Gratis (MBG)"},
+    {"name": "polri", "type": "norm", "mention_count": 54, "freq": 54, "topic": "Kontroversi Program Makan Bergizi Gratis MBG"},
+    {"name": "pemerintah pusat", "type": "norm", "mention_count": 37, "freq": 37, "topic": "Evaluasi Program Makan Bergizi Gratis"},
+    {"name": "menteri keuangan", "type": "norm", "mention_count": 36, "freq": 36, "topic": "Program Makan Bergizi Gratis di Kendari"},
+    {"name": "komisi ix dpr ri", "type": "norm", "mention_count": 31, "freq": 31, "topic": "Kontroversi Program Makan Bergizi Gratis MBG"},
+    {"name": "dpr ri", "type": "norm", "mention_count": 28, "freq": 28, "topic": "Kontroversi Program Makan Bergizi Gratis MBG"},
+    {"name": "ketua dprd kota malang", "type": "norm", "mention_count": 24, "freq": 24, "topic": "Kontroversi Program Makan Bergizi Gratis MBG"},
+    {"name": "tni", "type": "norm", "mention_count": 23, "freq": 23, "topic": "Kontroversi Program Makan Bergizi Gratis MBG"},
+    {"name": "wakil ketua komisi ix dpr ri", "type": "norm", "mention_count": 22, "freq": 22, "topic": "Kontroversi Program Makan Bergizi Gratis MBG"},
+    {"name": "kementerian pertahanan", "type": "norm", "mention_count": 19, "freq": 19, "topic": "Kontroversi Program Makan Bergizi Gratis MBG"},
+    {"name": "kementerian kesehatan", "type": "norm", "mention_count": 18, "freq": 18, "topic": "Kontroversi Program Makan Bergizi Gratis MBG"},
+    {"name": "ketua dpd ri", "type": "norm", "mention_count": 13, "freq": 13, "topic": "Kontroversi Program Makan Bergizi Gratis MBG"},
+    {"name": "pdip", "type": "norm", "mention_count": 13, "freq": 13, "topic": "Program Makan Bergizi Gratis (MBG)"},
+    {"name": "menteri dalam negeri", "type": "norm", "mention_count": 12, "freq": 12, "topic": "Evaluasi Program Makan Bergizi Gratis"},
+    {"name": "menteri kesehatan", "type": "norm", "mention_count": 11, "freq": 11, "topic": "Evaluasi Program Makan Bergizi Gratis"},
+    {"name": "wakil presiden", "type": "norm", "mention_count": 9, "freq": 9, "topic": "Program Makan Bergizi Gratis"},
+    {"name": "kementerian agama", "type": "norm", "mention_count": 8, "freq": 8, "topic": "Kontroversi Program Makan Bergizi Gratis MBG"},
+    {"name": "kpu", "type": "norm", "mention_count": 8, "freq": 8, "topic": "Program Makan Bergizi Gratis (MBG)"},
+    {"name": "gerindra", "type": "norm", "mention_count": 6, "freq": 6, "topic": "Program Makan Bergizi Gratis (MBG)"},
+    {"name": "komisi ii dpr ri", "type": "norm", "mention_count": 6, "freq": 6, "topic": "Kontroversi Program Makan Bergizi Gratis MBG"},
+    {"name": "menteri pertanian", "type": "norm", "mention_count": 6, "freq": 6, "topic": "Evaluasi Program Makan Bergizi Gratis"},
+    {"name": "wali kota solo", "type": "norm", "mention_count": 6, "freq": 6, "topic": "Program Makan Bergizi Gratis"},
+    {"name": "wakil presiden wapres", "type": "norm", "mention_count": 5, "freq": 5, "topic": "Program Makan Bergizi Gratis"},
+    {"name": "wakil wali kota bontang", "type": "norm", "mention_count": 5, "freq": 5, "topic": "Kontroversi Program Makan Bergizi Gratis MBG"},
+    {"name": "pemkab malang", "type": "norm", "mention_count": 4, "freq": 4, "topic": "Evaluasi Program Makan Bergizi Gratis"},
+    {"name": "wakil menteri pertanian", "type": "norm", "mention_count": 4, "freq": 4, "topic": "Evaluasi Program Makan Bergizi Gratis"},
+    {"name": "wapres ri", "type": "norm", "mention_count": 4, "freq": 4, "topic": "Program Makan Bergizi Gratis"},
+    {"name": "kemenhan", "type": "norm", "mention_count": 3, "freq": 3, "topic": "Kontroversi Program Makan Bergizi Gratis MBG"},
+    {"name": "kementerian pekerjaan umum", "type": "norm", "mention_count": 3, "freq": 3, "topic": "Kontroversi Program Makan Bergizi Gratis MBG"},
+    {"name": "kementerian sosial", "type": "norm", "mention_count": 3, "freq": 3, "topic": "Kontroversi Program Makan Bergizi Gratis MBG"},
+    {"name": "menteri koordinator bidang pangan republik indonesia", "type": "norm", "mention_count": 3, "freq": 3, "topic": "Evaluasi Program Makan Bergizi Gratis"},
+    {"name": "menteri perencanaan pembangunan nasional ppn kepala bappenas", "type": "norm", "mention_count": 3, "freq": 3, "topic": "Evaluasi Program Makan Bergizi Gratis"},
 ]
 
-MBG_TOPICS_FALLBACK = [
+MBG_RAW_ENTITIES = MBG_ENTITIES_FALLBACK
+
+MBG_TOPICS_FALLBACK: List[str] = [
     "Program Makan Bergizi Gratis (MBG)",
     "Evaluasi Program Makan Bergizi Gratis",
     "Kontroversi Program Makan Bergizi Gratis MBG",
@@ -178,7 +671,7 @@ MBG_TOPICS_FALLBACK = [
     "Lainnya / Tidak terklasifikasi",
 ]
 
-MBG_CO_OCCURS_FALLBACK = [
+MBG_CO_OCCURS_FALLBACK: List[Dict[str, Any]] = [
     {"source": "papua", "target": "sulawesi", "weight": 0.5909, "cooccur": 4, "pmi": 4.4558},
     {"source": "papua", "target": "ntt", "weight": 0.4998, "cooccur": 7, "pmi": 3.4894},
     {"source": "papua", "target": "maluku", "weight": 0.5518, "cooccur": 7, "pmi": 3.8523},
@@ -290,385 +783,4 @@ MBG_CO_OCCURS_FALLBACK = [
     {"source": "makodim 0809 kota bontang", "target": "wakil wali kota bontang", "weight": 0.9704, "cooccur": 4, "pmi": 7.318},
 ]
 
-def format_node(raw_name: str, node_type: str, mention_count: int, topic: Optional[str] = None, keywords: Optional[List[str]] = None) -> Dict[str, Any]:
-    norm_type = node_type.lower()
-    color = ENTITY_COLOR_MAP.get(norm_type, "#64748b")
-    is_topic = norm_type == "topic"
-    
-    # Scale node size based on mention_count
-    if is_topic:
-        size = 32
-        val = 40
-    else:
-        size = max(16, min(36, 16 + (mention_count // 20)))
-        val = mention_count
-
-    clean_label = raw_name.strip()
-    return {
-        "id": f"topic_{clean_label}" if is_topic else f"entity_{clean_label}",
-        "name": clean_label,
-        "label": clean_label,
-        "title": f"{clean_label} ({node_type.capitalize()} - {val} mentions)",
-        "category": node_type.capitalize(),
-        "type": norm_type,
-        "group": norm_type,
-        "val": val,
-        "value": val,
-        "size": size,
-        "color": color,
-        "mention_count": val,
-        "topic": topic,
-        "keywords": keywords or []
-    }
-
-def fetch_live_neo4j_graph(
-    min_freq: Optional[int] = 0,
-    entity_type: Optional[str] = None,
-    topic: Optional[str] = None
-) -> Optional[Dict[str, Any]]:
-    """
-    Mengambil data jaringan Knowledge Graph secara LIVE dari Neo4j di Port 7687.
-    Memetakan 8 tipe entitas resmi MBG (person, organization, geopolitical, location, product, event, norm, facility)
-    serta 2 tipe relasi: BELONGS_TO_TOPIC dan CO_OCCURS_WITH.
-    """
-    driver = get_neo4j_driver()
-    if not driver:
-        return None
-    try:
-        with driver.session() as session:
-            # 1. Fetch Topics
-            topics_data = session.run(
-                "MATCH (t:Topic) RETURN t.name as name, t.parent_topic as parent_topic, t.n_communities as n_communities, t.keywords as keywords"
-            ).data()
-
-            # 2. Fetch Entities
-            entities_data = session.run(
-                "MATCH (e:Entity) RETURN e.name as name, e.type as type, e.mention_count as mention_count, e.community_id as community_id, e.topic as topic"
-            ).data()
-
-            # 3. Fetch Belongs To Topic Edges
-            bt_edges = session.run(
-                "MATCH (e:Entity)-[r:BELONGS_TO_TOPIC]->(t:Topic) RETURN e.name as source, t.name as target, type(r) as type"
-            ).data()
-
-            # 4. Fetch Co-Occurs With Edges
-            co_edges = session.run(
-                "MATCH (a:Entity)-[r:CO_OCCURS_WITH]->(b:Entity) RETURN a.name as source, b.name as target, type(r) as type, r.weight as weight, r.cooccur as cooccur, r.pmi as pmi"
-            ).data()
-
-            all_entities_map: Dict[str, Dict[str, Any]] = {}
-            for e in entities_data:
-                e_name = (e.get("name") or "").strip()
-                if not e_name:
-                    continue
-                all_entities_map[e_name] = {
-                    "name": e_name,
-                    "type": (e.get("type") or "entity").lower(),
-                    "mention_count": int(e.get("mention_count") or 1),
-                    "topic": (e.get("topic") or "").strip() or None
-                }
-
-            nodes_dict: Dict[str, Dict[str, Any]] = {}
-            active_topic_filter = topic.strip() if topic and topic.strip() and topic.lower() != "all" else None
-            active_type_filter = entity_type.strip().lower() if entity_type and entity_type.strip() and entity_type.lower() != "all" else None
-            threshold = int(min_freq or 0)
-
-            # Insert Topics
-            for t in topics_data:
-                t_name = (t.get("name") or "").strip()
-                if not t_name:
-                    continue
-                if active_topic_filter and t_name.lower() != active_topic_filter.lower():
-                    continue
-                node = format_node(t_name, "topic", 40, keywords=t.get("keywords"))
-                nodes_dict[node["id"]] = node
-
-            # Insert Entities matching filter
-            matched_entity_names = set()
-            for e_name, e_info in all_entities_map.items():
-                e_type = e_info["type"]
-                e_cnt = e_info["mention_count"]
-                e_topic = e_info["topic"]
-
-                if active_type_filter and active_type_filter != "topic" and e_type != active_type_filter:
-                    continue
-                if active_topic_filter and e_topic and e_topic.lower() != active_topic_filter.lower():
-                    continue
-                if threshold > 0 and e_cnt < threshold:
-                    continue
-
-                matched_entity_names.add(e_name)
-                node = format_node(e_name, e_type, e_cnt, topic=e_topic)
-                nodes_dict[node["id"]] = node
-
-            # Ensure 1-hop co-occurring neighbor entities are also included when filtering by entity_type so CO_OCCURS_WITH edges remain visible
-            if active_type_filter and active_type_filter != "topic":
-                for co in co_edges:
-                    s_name = (co.get("source") or "").strip()
-                    t_name = (co.get("target") or "").strip()
-                    if s_name in matched_entity_names and t_name in all_entities_map:
-                        nb = all_entities_map[t_name]
-                        if threshold <= 0 or nb["mention_count"] >= threshold:
-                            nb_node = format_node(nb["name"], nb["type"], nb["mention_count"], topic=nb["topic"])
-                            nodes_dict[nb_node["id"]] = nb_node
-                    elif t_name in matched_entity_names and s_name in all_entities_map:
-                        nb = all_entities_map[s_name]
-                        if threshold <= 0 or nb["mention_count"] >= threshold:
-                            nb_node = format_node(nb["name"], nb["type"], nb["mention_count"], topic=nb["topic"])
-                            nodes_dict[nb_node["id"]] = nb_node
-
-            # Build Edges (2 Tipe Edge: BELONGS_TO_TOPIC & CO_OCCURS_WITH)
-            edges_list: List[Dict[str, Any]] = []
-            for bt in bt_edges:
-                s_name = (bt.get("source") or "").strip()
-                t_name = (bt.get("target") or "").strip()
-                src_id = f"entity_{s_name}"
-                tgt_id = f"topic_{t_name}"
-                if src_id in nodes_dict and tgt_id in nodes_dict:
-                    edges_list.append({
-                        "id": f"rel_bt_{s_name}_{t_name}",
-                        "from": src_id,
-                        "to": tgt_id,
-                        "source": src_id,
-                        "target": tgt_id,
-                        "source_name": s_name,
-                        "target_name": t_name,
-                        "label": "BELONGS_TO_TOPIC",
-                        "type": "BELONGS_TO_TOPIC",
-                        "relationship": "BELONGS_TO_TOPIC",
-                        "weight": 1,
-                        "value": 1,
-                        "style": "dashed"
-                    })
-
-            for co in co_edges:
-                s_name = (co.get("source") or "").strip()
-                t_name = (co.get("target") or "").strip()
-                src_id = f"entity_{s_name}"
-                tgt_id = f"entity_{t_name}"
-                w = float(co.get("weight") or 0.5)
-                cooccur = int(co.get("cooccur") or 3)
-                pmi_val = float(co.get("pmi") or 0.0)
-                if src_id in nodes_dict and tgt_id in nodes_dict:
-                    edges_list.append({
-                        "id": f"rel_co_{s_name}_{t_name}",
-                        "from": src_id,
-                        "to": tgt_id,
-                        "source": src_id,
-                        "target": tgt_id,
-                        "source_name": s_name,
-                        "target_name": t_name,
-                        "label": f"CO_OCCURS_WITH (NPMI {w:.2f})",
-                        "type": "CO_OCCURS_WITH",
-                        "relationship": "CO_OCCURS_WITH",
-                        "weight": round(w, 4),
-                        "npmi": round(w, 4),
-                        "value": cooccur,
-                        "cooccur": cooccur,
-                        "pmi": round(pmi_val, 4),
-                        "style": "solid"
-                    })
-
-            if nodes_dict:
-                nodes_list = list(nodes_dict.values())
-                return {
-                    "source": "neo4j_port_7687",
-                    "total_nodes": len(nodes_list),
-                    "total_edges": len(edges_list),
-                    "nodes": nodes_list,
-                    "edges": edges_list,
-                    "links": edges_list,
-                    "data": {
-                        "nodes": nodes_list,
-                        "edges": edges_list,
-                        "links": edges_list
-                    }
-                }
-    except Exception as e:
-        print(f"[NEO4J LIVE ERROR] {e}")
-    return None
-
-def build_mbg_graph_data(
-    min_freq: Optional[int] = 0,
-    entity_type: Optional[str] = None,
-    topic: Optional[str] = None
-) -> Dict[str, Any]:
-    """
-    Fallback data Knowledge Graph MBG (128 Entitas, 9 Topik, 128 BELONGS_TO_TOPIC, 109 CO_OCCURS_WITH)
-    jika Neo4j port 7687 sedang offline.
-    """
-    nodes_dict: Dict[str, Dict[str, Any]] = {}
-    threshold = int(min_freq or 0)
-    active_type = entity_type.strip().lower() if entity_type and entity_type.strip() and entity_type.lower() != "all" else None
-    active_topic = topic.strip().lower() if topic and topic.strip() and topic.lower() != "all" else None
-
-    all_entities_map = {e["name"]: e for e in MBG_ENTITIES_FALLBACK}
-
-    # 1. Topics (9 Topik)
-    for t_name in MBG_TOPICS_FALLBACK:
-        if active_topic and t_name.lower() != active_topic:
-            continue
-        node = format_node(t_name, "topic", 40)
-        nodes_dict[node["id"]] = node
-
-    # 2. Entities (128 Entitas)
-    matched_entity_names = set()
-    for ent in MBG_ENTITIES_FALLBACK:
-        e_name = ent["name"]
-        e_type = ent["type"].lower()
-        e_cnt = ent["mention_count"]
-        e_top = ent["topic"]
-
-        if active_type and active_type != "topic" and e_type != active_type:
-            continue
-        if active_topic and e_top.lower() != active_topic:
-            continue
-        if threshold > 0 and e_cnt < threshold:
-            continue
-
-        matched_entity_names.add(e_name)
-        node = format_node(e_name, e_type, e_cnt, topic=e_top)
-        nodes_dict[node["id"]] = node
-
-    # Keep 1-hop neighbor entities for CO_OCCURS_WITH when filtering by entity_type
-    if active_type and active_type != "topic":
-        for co in MBG_CO_OCCURS_FALLBACK:
-            s_name = co["source"]
-            t_name = co["target"]
-            if s_name in matched_entity_names and t_name in all_entities_map:
-                nb = all_entities_map[t_name]
-                if threshold <= 0 or nb["mention_count"] >= threshold:
-                    nb_node = format_node(nb["name"], nb["type"].lower(), nb["mention_count"], topic=nb["topic"])
-                    nodes_dict[nb_node["id"]] = nb_node
-            elif t_name in matched_entity_names and s_name in all_entities_map:
-                nb = all_entities_map[s_name]
-                if threshold <= 0 or nb["mention_count"] >= threshold:
-                    nb_node = format_node(nb["name"], nb["type"].lower(), nb["mention_count"], topic=nb["topic"])
-                    nodes_dict[nb_node["id"]] = nb_node
-
-    edges_list: List[Dict[str, Any]] = []
-
-    # 3. Edge Tipe 1: BELONGS_TO_TOPIC (128 relasi)
-    for ent in MBG_ENTITIES_FALLBACK:
-        e_name = ent["name"]
-        e_top = ent["topic"]
-        src_id = f"entity_{e_name}"
-        tgt_id = f"topic_{e_top}"
-        if src_id in nodes_dict and tgt_id in nodes_dict:
-            edges_list.append({
-                "id": f"rel_bt_{e_name}_{e_top}",
-                "from": src_id,
-                "to": tgt_id,
-                "source": src_id,
-                "target": tgt_id,
-                "source_name": e_name,
-                "target_name": e_top,
-                "label": "BELONGS_TO_TOPIC",
-                "type": "BELONGS_TO_TOPIC",
-                "relationship": "BELONGS_TO_TOPIC",
-                "weight": 1,
-                "value": 1,
-                "style": "dashed"
-            })
-
-    # 4. Edge Tipe 2: CO_OCCURS_WITH (109 relasi ko-okurensi antar-entitas)
-    for co in MBG_CO_OCCURS_FALLBACK:
-        s_name = co["source"]
-        t_name = co["target"]
-        src_id = f"entity_{s_name}"
-        tgt_id = f"entity_{t_name}"
-        w = float(co["weight"])
-        cooccur = int(co["cooccur"])
-        pmi_val = float(co["pmi"])
-        if src_id in nodes_dict and tgt_id in nodes_dict:
-            edges_list.append({
-                "id": f"rel_co_{s_name}_{t_name}",
-                "from": src_id,
-                "to": tgt_id,
-                "source": src_id,
-                "target": tgt_id,
-                "source_name": s_name,
-                "target_name": t_name,
-                "label": f"CO_OCCURS_WITH (NPMI {w:.2f})",
-                "type": "CO_OCCURS_WITH",
-                "relationship": "CO_OCCURS_WITH",
-                "weight": round(w, 4),
-                "npmi": round(w, 4),
-                "value": cooccur,
-                "cooccur": cooccur,
-                "pmi": round(pmi_val, 4),
-                "style": "solid"
-            })
-
-    nodes_list = list(nodes_dict.values())
-    return {
-        "source": "fallback_mbg_dataset",
-        "total_nodes": len(nodes_list),
-        "total_edges": len(edges_list),
-        "nodes": nodes_list,
-        "edges": edges_list,
-        "links": edges_list,
-        "data": {
-            "nodes": nodes_list,
-            "edges": edges_list,
-            "links": edges_list
-        }
-    }
-
-@router.get("/data")
-def get_graph_data(
-    platform: Optional[str] = Query(None),
-    time_filter: Optional[str] = Query(None),
-    entity_type: Optional[str] = Query(None),
-    topic: Optional[str] = Query(None),
-    min_freq: Optional[int] = Query(0),
-    db: Session = Depends(get_db)
-):
-    """
-    Endpoint utama Knowledge Graph untuk visualisasi jaringan topik dan 8 tipe entitas MBG.
-    Prioritaskan query LIVE dari Neo4J di Port 7687 jika driver terhubung.
-    """
-    live_graph = fetch_live_neo4j_graph(min_freq=min_freq, entity_type=entity_type, topic=topic)
-    if live_graph:
-        return live_graph
-    return build_mbg_graph_data(min_freq=min_freq, entity_type=entity_type, topic=topic)
-
-@router.get("/nodes")
-def get_graph_nodes(
-    entity_type: Optional[str] = Query(None),
-    topic: Optional[str] = Query(None),
-    min_freq: Optional[int] = Query(0),
-    db: Session = Depends(get_db)
-):
-    graph = get_graph_data(entity_type=entity_type, topic=topic, min_freq=min_freq, db=db)
-    return graph.get("nodes", [])
-
-@router.get("/edges")
-def get_graph_edges(
-    entity_type: Optional[str] = Query(None),
-    topic: Optional[str] = Query(None),
-    min_freq: Optional[int] = Query(0),
-    db: Session = Depends(get_db)
-):
-    graph = get_graph_data(entity_type=entity_type, topic=topic, min_freq=min_freq, db=db)
-    return graph.get("edges", [])
-
-@router.get("/node/{node_id}")
-def get_node_detail(node_id: str, db: Session = Depends(get_db)):
-    graph = get_graph_data(db=db)
-    for n in graph.get("nodes", []):
-        if n.get("id") == node_id or n.get("name") == node_id:
-            return n
-    return {"id": node_id, "name": node_id, "status": "not_found"}
-
-@router.get("")
-@router.get("/")
-def get_graph_root(
-    platform: Optional[str] = Query(None),
-    time_filter: Optional[str] = Query(None),
-    entity_type: Optional[str] = Query(None),
-    topic: Optional[str] = Query(None),
-    min_freq: Optional[int] = Query(0),
-    db: Session = Depends(get_db)
-):
-    return get_graph_data(platform=platform, time_filter=time_filter, entity_type=entity_type, topic=topic, min_freq=min_freq, db=db)
+MBG_CO_OCCURS_EDGES = MBG_CO_OCCURS_FALLBACK

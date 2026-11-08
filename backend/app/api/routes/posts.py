@@ -1,15 +1,19 @@
-from fastapi import APIRouter, Depends, Query
-from sqlalchemy.orm import Session
-from sqlalchemy import or_
-from typing import Optional, List, Dict, Any
 from datetime import datetime, timedelta
-
+from typing import Any, Dict, List, Optional
+from fastapi import APIRouter, Depends, Query
+from sqlalchemy import or_
+from sqlalchemy.orm import Session
 from app.api.dependencies import get_db
-from models import Post
+from app.api.routes.dashboard import normalize_platform_filter, parse_filter_days
 from app.api.routes.sentiment import serialize_post
-from app.api.routes.dashboard import normalize_platform_filter
+from models import Post
+
 
 router = APIRouter(tags=["Posts"])
+
+DEFAULT_POSTS_LIMIT = 50
+MAX_POSTS_LIMIT = 500
+
 
 @router.get("")
 @router.get("/")
@@ -19,35 +23,37 @@ def get_posts(
     topic_id: Optional[int] = Query(None, description="Filter topic ID"),
     days: Optional[int] = Query(None, description="Filter rentang hari"),
     time_filter: Optional[str] = Query(None, description="Filter waktu (last7, last30, all)"),
-    limit: int = Query(50, ge=1, le=500),
+    limit: int = Query(DEFAULT_POSTS_LIMIT, ge=1, le=MAX_POSTS_LIMIT),
     skip: int = Query(0, ge=0),
-    db: Session = Depends(get_db)
-):
-    """
-    12.6: Daftar post dengan paginasi dan filter.
-    """
-    query = db.query(Post)
+    db: Session = Depends(get_db),
+) -> List[Dict[str, Any]]:
+    """Return paginated social posts filtered by platform, sentiment, topic, and timeframe."""
+    post_query = db.query(Post)
 
-    if platform and platform.lower() != "all":
-        query = query.filter(Post.platform == platform.lower())
+    platform_filter_list = normalize_platform_filter(platform)
+    if platform_filter_list:
+        post_query = post_query.filter(Post.platform.in_(platform_filter_list))
 
-    if sentiment and sentiment.lower() != "all":
-        query = query.filter(Post.sentiment == sentiment.lower())
+    if sentiment and isinstance(sentiment, str) and sentiment.lower() != "all":
+        post_query = post_query.filter(Post.sentiment == sentiment.lower())
 
-    if topic_id:
-        query = query.filter(Post.topic_id == topic_id)
+    if isinstance(topic_id, int) and topic_id:
+        post_query = post_query.filter(Post.topic_id == topic_id)
 
-    filter_days = days
-    if not filter_days and time_filter:
-        if "7" in time_filter:
-            filter_days = 7
-        elif "30" in time_filter:
-            filter_days = 30
+    resolved_skip = skip if isinstance(skip, int) else 0
+    resolved_limit = limit if isinstance(limit, int) else DEFAULT_POSTS_LIMIT
 
+    filter_days = parse_filter_days(days, time_filter if isinstance(time_filter, str) else None)
     if filter_days:
-        start_date = datetime.utcnow() - timedelta(days=filter_days)
-        query = query.filter(or_(Post.posted_at >= start_date, Post.created_at >= start_date))
+        cutoff_date = datetime.utcnow() - timedelta(days=filter_days)
+        post_query = post_query.filter(
+            or_(Post.posted_at >= cutoff_date, Post.created_at >= cutoff_date)
+        )
 
-    posts = query.order_by(Post.posted_at.desc().nullslast()).offset(skip).limit(limit).all()
-    return [serialize_post(p) for p in posts]
-
+    posts = (
+        post_query.order_by(Post.posted_at.desc().nullslast())
+        .offset(resolved_skip)
+        .limit(resolved_limit)
+        .all()
+    )
+    return [serialize_post(post_item) for post_item in posts]

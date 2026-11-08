@@ -1,4 +1,4 @@
-import { useMemo } from 'react';
+import React, { useMemo } from 'react';
 import { DashboardOverviewData } from '../../services/api';
 
 interface SummaryCardsProps {
@@ -11,150 +11,48 @@ interface SummaryCardsProps {
   timeFilter?: string;
 }
 
-function SummaryCards({ theme, data, overviewStats, topicsCount = 0, entitiesCount = 0, type = 'overview', timeFilter = 'all' }: SummaryCardsProps) {
-  const stats = useMemo(() => {
-    const topics = new Set<string>();
-    const entities = new Set<string>();
-    const sentimentCounts: Record<string, number> = { positive: 0, negative: 0, neutral: 0 };
-    let postsEngagement = 0;
-    let scoreSum = 0;
-    let scoreCount = 0;
+interface ComputedSummaryStats {
+  totalPosts: number;
+  totalEngagement: number;
+  activeNarratives: number;
+  uniqueEntities: number;
+  positivePercentage: number;
+  negativePercentage: number;
+  neutralPercentage: number;
+  avgConfidence: number;
+}
 
-    data.forEach(item => {
-      if (item.topic) topics.add(item.topic);
-      if (item.sentiment && sentimentCounts[item.sentiment] !== undefined) {
-        sentimentCounts[item.sentiment]++;
-      }
-      if (typeof item.sentiment_score === 'number') {
-        scoreSum += item.sentiment_score <= 1 ? item.sentiment_score * 100 : item.sentiment_score;
-        scoreCount++;
-      }
-      if (item.engagement) {
-        postsEngagement += (item.engagement.likes || 0) + (item.engagement.shares || 0) + (item.engagement.comments || 0) + (item.engagement.views || 0);
-      }
-      if (item.entities && Array.isArray(item.entities)) {
-        item.entities.forEach((ent: any) => {
-          if (ent.name) entities.add(ent.name.toLowerCase());
-        });
-      }
-      if (item.content) {
-        const hashtags = item.content.match(/#[\w]+/g) || [];
-        hashtags.forEach((tag: string) => entities.add(tag.substring(1).toLowerCase()));
-      }
-    });
+const MILLION_THRESHOLD = 1_000_000;
+const THOUSAND_THRESHOLD = 1_000;
+const PERCENTAGE_MULTIPLIER = 100;
 
-    // Prioritaskan data KPI resmi dari GET /api/dashboard/overview (agar tidak tertimpa limit=50 dari /sentiment/posts)
-    const totalPosts = overviewStats?.totalPosts || data.length || 0;
-    const totalEngagement = overviewStats?.totalEngagement || postsEngagement || 0;
-    const activeNarratives = overviewStats?.trendingTopicsCount || topicsCount || topics.size || 0;
-    const uniqueEntities = overviewStats?.uniqueEntitiesCount || entitiesCount || entities.size || 0;
-
-    const positivePerc =
-      overviewStats?.positiveShare !== undefined && overviewStats.positiveShare > 0
-        ? Math.round(Number(overviewStats.positiveShare))
-        : data.length > 0
-        ? Math.round((sentimentCounts.positive / data.length) * 100)
-        : 0;
-    const negativePerc =
-      overviewStats?.negativeShare !== undefined && overviewStats.negativeShare > 0
-        ? Math.round(Number(overviewStats.negativeShare))
-        : data.length > 0
-        ? Math.round((sentimentCounts.negative / data.length) * 100)
-        : 0;
-    const neutralPerc =
-      overviewStats?.neutralShare !== undefined && overviewStats.neutralShare > 0
-        ? Math.round(Number(overviewStats.neutralShare))
-        : data.length > 0
-        ? Math.round((sentimentCounts.neutral / data.length) * 100)
-        : 0;
-    const avgConfidence =
-      overviewStats?.avgConfidence !== undefined && overviewStats.avgConfidence > 0
-        ? Math.round(Number(overviewStats.avgConfidence))
-        : scoreCount > 0
-        ? Math.round(scoreSum / scoreCount)
-        : 0;
-
-    return {
-      totalPosts,
-      totalEngagement,
-      activeNarratives,
-      uniqueEntities,
-      positivePerc,
-      negativePerc,
-      neutralPerc,
-      avgConfidence
-    };
-  }, [data, overviewStats, topicsCount, entitiesCount]);
-
-  const formatEngagement = (num: number) => {
-    if (num >= 1000000) return (num / 1000000).toLocaleString('id-ID', { maximumFractionDigits: 1 }) + 'M';
-    if (num >= 1000) return (num / 1000).toLocaleString('id-ID', { maximumFractionDigits: 1 }) + 'K';
-    return num.toLocaleString('id-ID');
-  };
-
-  const formatPosts = (num: number) => {
-    return num.toLocaleString('id-ID');
-  };
+function SummaryCards({
+  theme,
+  data,
+  overviewStats,
+  topicsCount = 0,
+  entitiesCount = 0,
+  type = 'overview',
+  timeFilter = 'all',
+}: SummaryCardsProps) {
+  const stats = useMemo(
+    () => computeSummaryStats(data, overviewStats, topicsCount, entitiesCount),
+    [data, overviewStats, topicsCount, entitiesCount]
+  );
 
   if (type === 'sentiment') {
-    return (
-      <div style={{ display: 'grid', gridTemplateColumns: 'repeat(auto-fit, minmax(220px, 1fr))', gap: '20px' }}>
-        <div style={{ backgroundColor: theme.bgCard, padding: '24px', borderRadius: '14px', border: `1px solid ${theme.border}`, display: 'flex', flexDirection: 'column' }}>
-          <span style={{ fontSize: '14px', fontWeight: '600', color: theme.textMuted }}>Positive</span>
-          <span style={{ fontSize: '32px', fontWeight: '800', color: '#10b981', margin: '8px 0 4px 0' }}>{stats.positivePerc}%</span>
-          <span style={{ fontSize: '13px', color: theme.textMuted }}>Sentimen Positif</span>
-        </div>
-        <div style={{ backgroundColor: theme.bgCard, padding: '24px', borderRadius: '14px', border: `1px solid ${theme.border}`, display: 'flex', flexDirection: 'column' }}>
-          <span style={{ fontSize: '14px', fontWeight: '600', color: theme.textMuted }}>Negative</span>
-          <span style={{ fontSize: '32px', fontWeight: '800', color: '#ef4444', margin: '8px 0 4px 0' }}>{stats.negativePerc}%</span>
-          <span style={{ fontSize: '13px', color: theme.textMuted }}>Sentimen Negatif</span>
-        </div>
-        <div style={{ backgroundColor: theme.bgCard, padding: '24px', borderRadius: '14px', border: `1px solid ${theme.border}`, display: 'flex', flexDirection: 'column' }}>
-          <span style={{ fontSize: '14px', fontWeight: '600', color: theme.textMuted }}>Neutral</span>
-          <span style={{ fontSize: '32px', fontWeight: '800', color: '#f59e0b', margin: '8px 0 4px 0' }}>{stats.neutralPerc}%</span>
-          <span style={{ fontSize: '13px', color: theme.textMuted }}>Sentimen Netral</span>
-        </div>
-        <div style={{ backgroundColor: theme.bgCard, padding: '24px', borderRadius: '14px', border: `1px solid ${theme.border}`, display: 'flex', flexDirection: 'column' }}>
-          <span style={{ fontSize: '14px', fontWeight: '600', color: theme.textMuted }}>Avg. Confidence</span>
-          <span style={{ fontSize: '32px', fontWeight: '800', color: '#3b82f6', margin: '8px 0 4px 0' }}>{stats.avgConfidence}%</span>
-          <span style={{ fontSize: '13px', color: theme.textMuted }}>Kepercayaan Sistem</span>
-        </div>
-      </div>
-    );
+    return <SentimentSummaryGrid theme={theme} stats={stats} />;
   }
 
   const postsGrowth = overviewStats?.postsGrowth;
   const engagementGrowth = overviewStats?.engagementGrowth;
   const isAllTime = !timeFilter || timeFilter === 'all';
+  const comparisonPeriodLabel = isAllTime ? 'vs paruh awal' : 'vs previous period';
 
   return (
     <div style={{ display: 'grid', gridTemplateColumns: 'repeat(auto-fit, minmax(230px, 1fr))', gap: '20px' }}>
-      
-      {/* Card 1: Total Posts */}
-      <div 
-        className="card-hover-effect"
-        style={{
-          backgroundColor: theme.bgCard,
-          padding: '20px 24px',
-          borderRadius: '14px',
-          border: `1px solid ${theme.border}`,
-          boxShadow: '0 2px 8px rgba(0, 0, 0, 0.04)',
-          display: 'flex',
-          alignItems: 'center',
-          gap: '20px'
-        }}
-      >
-        <div style={{
-          width: '56px',
-          height: '56px',
-          borderRadius: '12px',
-          backgroundColor: '#e0f2fe',
-          display: 'flex',
-          alignItems: 'center',
-          justifyContent: 'center',
-          flexShrink: 0
-        }}>
-          {/* Globe Icon */}
+      <div className="card-hover-effect" style={buildCardContainerStyle(theme)}>
+        <div style={buildIconBadgeStyle('#e0f2fe')}>
           <svg width="28" height="28" viewBox="0 0 24 24" fill="none" stroke="#0284c7" strokeWidth="2" strokeLinecap="round" strokeLinejoin="round">
             <circle cx="12" cy="12" r="10"></circle>
             <line x1="2" y1="12" x2="22" y2="12"></line>
@@ -164,55 +62,20 @@ function SummaryCards({ theme, data, overviewStats, topicsCount = 0, entitiesCou
         <div style={{ display: 'flex', flexDirection: 'column', textAlign: 'left' }}>
           <span style={{ fontSize: '14px', fontWeight: '600', color: theme.textMuted }}>Total Posts</span>
           <span style={{ fontSize: '26px', fontWeight: '800', color: theme.textMain, margin: '2px 0' }}>
-            {formatPosts(stats.totalPosts)}
+            {formatPostCount(stats.totalPosts)}
           </span>
-          {postsGrowth !== undefined && postsGrowth !== null ? (
-            <span style={{
-              fontSize: '13px',
-              fontWeight: '600',
-              color: postsGrowth >= 0 ? '#16a34a' : '#dc2626',
-              display: 'flex',
-              alignItems: 'center',
-              gap: '4px'
-            }}>
-              <span style={{ fontWeight: 'bold' }}>
-                {postsGrowth >= 0 ? `↑ +${postsGrowth}%` : `↓ ${Math.abs(postsGrowth)}%`}
-              </span>
-              <span>{isAllTime ? 'vs paruh awal' : 'vs previous period'}</span>
-            </span>
-          ) : (
-            <span style={{ fontSize: '13px', fontWeight: '600', color: '#16a34a', display: 'flex', alignItems: 'center', gap: '4px' }}>
-              <span style={{ fontWeight: 'bold' }}>100%</span> total dataset
-            </span>
-          )}
+          <GrowthSubtitle
+            growthValue={postsGrowth}
+            comparisonLabel={comparisonPeriodLabel}
+            fallbackHighlight="100%"
+            fallbackText="total dataset"
+            fallbackColor="#16a34a"
+          />
         </div>
       </div>
 
-      {/* Card 2: Total Engagement */}
-      <div 
-        className="card-hover-effect"
-        style={{
-          backgroundColor: theme.bgCard,
-          padding: '20px 24px',
-          borderRadius: '14px',
-          border: `1px solid ${theme.border}`,
-          boxShadow: '0 2px 8px rgba(0, 0, 0, 0.04)',
-          display: 'flex',
-          alignItems: 'center',
-          gap: '20px'
-        }}
-      >
-        <div style={{
-          width: '56px',
-          height: '56px',
-          borderRadius: '12px',
-          backgroundColor: '#f3e8ff',
-          display: 'flex',
-          alignItems: 'center',
-          justifyContent: 'center',
-          flexShrink: 0
-        }}>
-          {/* Users Icon */}
+      <div className="card-hover-effect" style={buildCardContainerStyle(theme)}>
+        <div style={buildIconBadgeStyle('#f3e8ff')}>
           <svg width="28" height="28" viewBox="0 0 24 24" fill="none" stroke="#9333ea" strokeWidth="2" strokeLinecap="round" strokeLinejoin="round">
             <path d="M17 21v-2a4 4 0 0 0-4-4H5a4 4 0 0 0-4 4v2"></path>
             <circle cx="9" cy="7" r="4"></circle>
@@ -223,55 +86,20 @@ function SummaryCards({ theme, data, overviewStats, topicsCount = 0, entitiesCou
         <div style={{ display: 'flex', flexDirection: 'column', textAlign: 'left' }}>
           <span style={{ fontSize: '14px', fontWeight: '600', color: theme.textMuted }}>Total Engagement</span>
           <span style={{ fontSize: '26px', fontWeight: '800', color: theme.textMain, margin: '2px 0' }}>
-            {formatEngagement(stats.totalEngagement)}
+            {formatEngagementCount(stats.totalEngagement)}
           </span>
-          {engagementGrowth !== undefined && engagementGrowth !== null ? (
-            <span style={{
-              fontSize: '13px',
-              fontWeight: '600',
-              color: engagementGrowth >= 0 ? '#16a34a' : '#dc2626',
-              display: 'flex',
-              alignItems: 'center',
-              gap: '4px'
-            }}>
-              <span style={{ fontWeight: 'bold' }}>
-                {engagementGrowth >= 0 ? `↑ +${engagementGrowth}%` : `↓ ${Math.abs(engagementGrowth)}%`}
-              </span>
-              <span>{isAllTime ? 'vs paruh awal' : 'vs previous period'}</span>
-            </span>
-          ) : (
-            <span style={{ fontSize: '13px', fontWeight: '600', color: '#9333ea', display: 'flex', alignItems: 'center', gap: '4px' }}>
-              <span style={{ fontWeight: 'bold' }}>Total interaksi</span> likes & comments
-            </span>
-          )}
+          <GrowthSubtitle
+            growthValue={engagementGrowth}
+            comparisonLabel={comparisonPeriodLabel}
+            fallbackHighlight="Total interaksi"
+            fallbackText="likes & comments"
+            fallbackColor="#9333ea"
+          />
         </div>
       </div>
 
-      {/* Card 3: Trending Topics */}
-      <div 
-        className="card-hover-effect"
-        style={{
-          backgroundColor: theme.bgCard,
-          padding: '20px 24px',
-          borderRadius: '14px',
-          border: `1px solid ${theme.border}`,
-          boxShadow: '0 2px 8px rgba(0, 0, 0, 0.04)',
-          display: 'flex',
-          alignItems: 'center',
-          gap: '20px'
-        }}
-      >
-        <div style={{
-          width: '56px',
-          height: '56px',
-          borderRadius: '12px',
-          backgroundColor: '#fef3c7',
-          display: 'flex',
-          alignItems: 'center',
-          justifyContent: 'center',
-          flexShrink: 0
-        }}>
-          {/* Flame Icon */}
+      <div className="card-hover-effect" style={buildCardContainerStyle(theme)}>
+        <div style={buildIconBadgeStyle('#fef3c7')}>
           <svg width="28" height="28" viewBox="0 0 24 24" fill="none" stroke="#ea580c" strokeWidth="2" strokeLinecap="round" strokeLinejoin="round">
             <path d="M8.5 14.5A2.5 2.5 0 0 0 11 12c0-1.38-.5-2-1-3-1.072-2.143-.224-4.054 2-6 .5 2.5 2 4.9 4 6.5 2 1.6 3 3.5 3 5.5a7 7 0 1 1-14 0c0-1.153.433-2.294 1-3a2.5 2.5 0 0 0 2.5 3.5z"></path>
           </svg>
@@ -287,31 +115,8 @@ function SummaryCards({ theme, data, overviewStats, topicsCount = 0, entitiesCou
         </div>
       </div>
 
-      {/* Card 4: Unique Entities */}
-      <div 
-        className="card-hover-effect"
-        style={{
-          backgroundColor: theme.bgCard,
-          padding: '20px 24px',
-          borderRadius: '14px',
-          border: `1px solid ${theme.border}`,
-          boxShadow: '0 2px 8px rgba(0, 0, 0, 0.04)',
-          display: 'flex',
-          alignItems: 'center',
-          gap: '20px'
-        }}
-      >
-        <div style={{
-          width: '56px',
-          height: '56px',
-          borderRadius: '12px',
-          backgroundColor: '#e0f2fe',
-          display: 'flex',
-          alignItems: 'center',
-          justifyContent: 'center',
-          flexShrink: 0
-        }}>
-          {/* Document Icon */}
+      <div className="card-hover-effect" style={buildCardContainerStyle(theme)}>
+        <div style={buildIconBadgeStyle('#e0f2fe')}>
           <svg width="28" height="28" viewBox="0 0 24 24" fill="none" stroke="#0284c7" strokeWidth="2" strokeLinecap="round" strokeLinejoin="round">
             <path d="M14 2H6a2 2 0 0 0-2 2v16a2 2 0 0 0 2 2h12a2 2 0 0 0 2-2V8z"></path>
             <polyline points="14 2 14 8 20 8"></polyline>
@@ -330,9 +135,232 @@ function SummaryCards({ theme, data, overviewStats, topicsCount = 0, entitiesCou
           </span>
         </div>
       </div>
-
     </div>
   );
+}
+
+function SentimentSummaryGrid({
+  theme,
+  stats,
+}: {
+  theme: any;
+  stats: ComputedSummaryStats;
+}) {
+  const cardStyle: React.CSSProperties = {
+    backgroundColor: theme.bgCard,
+    padding: '24px',
+    borderRadius: '14px',
+    border: `1px solid ${theme.border}`,
+    display: 'flex',
+    flexDirection: 'column',
+  };
+
+  return (
+    <div style={{ display: 'grid', gridTemplateColumns: 'repeat(auto-fit, minmax(220px, 1fr))', gap: '20px' }}>
+      <div style={cardStyle}>
+        <span style={{ fontSize: '14px', fontWeight: '600', color: theme.textMuted }}>Positive</span>
+        <span style={{ fontSize: '32px', fontWeight: '800', color: '#10b981', margin: '8px 0 4px 0' }}>
+          {stats.positivePercentage}%
+        </span>
+        <span style={{ fontSize: '13px', color: theme.textMuted }}>Sentimen Positif</span>
+      </div>
+      <div style={cardStyle}>
+        <span style={{ fontSize: '14px', fontWeight: '600', color: theme.textMuted }}>Negative</span>
+        <span style={{ fontSize: '32px', fontWeight: '800', color: '#ef4444', margin: '8px 0 4px 0' }}>
+          {stats.negativePercentage}%
+        </span>
+        <span style={{ fontSize: '13px', color: theme.textMuted }}>Sentimen Negatif</span>
+      </div>
+      <div style={cardStyle}>
+        <span style={{ fontSize: '14px', fontWeight: '600', color: theme.textMuted }}>Neutral</span>
+        <span style={{ fontSize: '32px', fontWeight: '800', color: '#f59e0b', margin: '8px 0 4px 0' }}>
+          {stats.neutralPercentage}%
+        </span>
+        <span style={{ fontSize: '13px', color: theme.textMuted }}>Sentimen Netral</span>
+      </div>
+      <div style={cardStyle}>
+        <span style={{ fontSize: '14px', fontWeight: '600', color: theme.textMuted }}>Avg. Confidence</span>
+        <span style={{ fontSize: '32px', fontWeight: '800', color: '#3b82f6', margin: '8px 0 4px 0' }}>
+          {stats.avgConfidence}%
+        </span>
+        <span style={{ fontSize: '13px', color: theme.textMuted }}>Kepercayaan Sistem</span>
+      </div>
+    </div>
+  );
+}
+
+function GrowthSubtitle({
+  growthValue,
+  comparisonLabel,
+  fallbackHighlight,
+  fallbackText,
+  fallbackColor,
+}: {
+  growthValue?: number;
+  comparisonLabel: string;
+  fallbackHighlight: string;
+  fallbackText: string;
+  fallbackColor: string;
+}) {
+  if (growthValue !== undefined && growthValue !== null) {
+    const isNonNegative = growthValue >= 0;
+    const growthColor = isNonNegative ? '#16a34a' : '#dc2626';
+    const formattedRate = isNonNegative
+      ? `↑ +${growthValue}%`
+      : `↓ ${Math.abs(growthValue)}%`;
+
+    return (
+      <span style={{
+        fontSize: '13px',
+        fontWeight: '600',
+        color: growthColor,
+        display: 'flex',
+        alignItems: 'center',
+        gap: '4px',
+      }}>
+        <span style={{ fontWeight: 'bold' }}>{formattedRate}</span>
+        <span>{comparisonLabel}</span>
+      </span>
+    );
+  }
+
+  return (
+    <span style={{ fontSize: '13px', fontWeight: '600', color: fallbackColor, display: 'flex', alignItems: 'center', gap: '4px' }}>
+      <span style={{ fontWeight: 'bold' }}>{fallbackHighlight}</span> {fallbackText}
+    </span>
+  );
+}
+
+function computeSummaryStats(
+  posts: any[],
+  overviewStats: DashboardOverviewData | null | undefined,
+  topicsCount: number,
+  entitiesCount: number
+): ComputedSummaryStats {
+  const uniqueTopics = new Set<string>();
+  const uniqueEntities = new Set<string>();
+  const sentimentCounts: Record<string, number> = { positive: 0, negative: 0, neutral: 0 };
+  let localEngagementTotal = 0;
+  let confidenceScoreSum = 0;
+  let confidenceScoreCount = 0;
+
+  posts.forEach((postItem) => {
+    if (postItem.topic) {
+      uniqueTopics.add(postItem.topic);
+    }
+    if (postItem.sentiment && sentimentCounts[postItem.sentiment] !== undefined) {
+      sentimentCounts[postItem.sentiment]++;
+    }
+    if (typeof postItem.sentiment_score === 'number') {
+      const normalizedScore =
+        postItem.sentiment_score <= 1
+          ? postItem.sentiment_score * PERCENTAGE_MULTIPLIER
+          : postItem.sentiment_score;
+      confidenceScoreSum += normalizedScore;
+      confidenceScoreCount++;
+    }
+    if (postItem.engagement) {
+      localEngagementTotal +=
+        (postItem.engagement.likes || 0) +
+        (postItem.engagement.shares || 0) +
+        (postItem.engagement.comments || 0) +
+        (postItem.engagement.views || 0);
+    }
+    if (Array.isArray(postItem.entities)) {
+      postItem.entities.forEach((entityEntry: any) => {
+        if (entityEntry.name) {
+          uniqueEntities.add(entityEntry.name.toLowerCase());
+        }
+      });
+    }
+    if (postItem.content) {
+      const matchedHashtags = postItem.content.match(/#[\w]+/g) || [];
+      matchedHashtags.forEach((hashtag: string) => {
+        uniqueEntities.add(hashtag.substring(1).toLowerCase());
+      });
+    }
+  });
+
+  const totalPosts = overviewStats?.totalPosts || posts.length || 0;
+  const totalEngagement = overviewStats?.totalEngagement || localEngagementTotal || 0;
+  const activeNarratives = overviewStats?.trendingTopicsCount || topicsCount || uniqueTopics.size || 0;
+  const uniqueEntitiesTotal = overviewStats?.uniqueEntitiesCount || entitiesCount || uniqueEntities.size || 0;
+
+  const positivePercentage =
+    overviewStats?.positiveShare !== undefined && overviewStats.positiveShare > 0
+      ? Math.round(Number(overviewStats.positiveShare))
+      : posts.length > 0
+        ? Math.round((sentimentCounts.positive / posts.length) * PERCENTAGE_MULTIPLIER)
+        : 0;
+  const negativePercentage =
+    overviewStats?.negativeShare !== undefined && overviewStats.negativeShare > 0
+      ? Math.round(Number(overviewStats.negativeShare))
+      : posts.length > 0
+        ? Math.round((sentimentCounts.negative / posts.length) * PERCENTAGE_MULTIPLIER)
+        : 0;
+  const neutralPercentage =
+    overviewStats?.neutralShare !== undefined && overviewStats.neutralShare > 0
+      ? Math.round(Number(overviewStats.neutralShare))
+      : posts.length > 0
+        ? Math.round((sentimentCounts.neutral / posts.length) * PERCENTAGE_MULTIPLIER)
+        : 0;
+  const avgConfidence =
+    overviewStats?.avgConfidence !== undefined && overviewStats.avgConfidence > 0
+      ? Math.round(Number(overviewStats.avgConfidence))
+      : confidenceScoreCount > 0
+        ? Math.round(confidenceScoreSum / confidenceScoreCount)
+        : 0;
+
+  return {
+    totalPosts,
+    totalEngagement,
+    activeNarratives,
+    uniqueEntities: uniqueEntitiesTotal,
+    positivePercentage,
+    negativePercentage,
+    neutralPercentage,
+    avgConfidence,
+  };
+}
+
+function formatEngagementCount(value: number): string {
+  if (value >= MILLION_THRESHOLD) {
+    return `${(value / MILLION_THRESHOLD).toLocaleString('id-ID', { maximumFractionDigits: 1 })}M`;
+  }
+  if (value >= THOUSAND_THRESHOLD) {
+    return `${(value / THOUSAND_THRESHOLD).toLocaleString('id-ID', { maximumFractionDigits: 1 })}K`;
+  }
+  return value.toLocaleString('id-ID');
+}
+
+function formatPostCount(value: number): string {
+  return value.toLocaleString('id-ID');
+}
+
+function buildCardContainerStyle(theme: any): React.CSSProperties {
+  return {
+    backgroundColor: theme.bgCard,
+    padding: '20px 24px',
+    borderRadius: '14px',
+    border: `1px solid ${theme.border}`,
+    boxShadow: '0 2px 8px rgba(0, 0, 0, 0.04)',
+    display: 'flex',
+    alignItems: 'center',
+    gap: '20px',
+  };
+}
+
+function buildIconBadgeStyle(backgroundColor: string): React.CSSProperties {
+  return {
+    width: '56px',
+    height: '56px',
+    borderRadius: '12px',
+    backgroundColor,
+    display: 'flex',
+    alignItems: 'center',
+    justifyContent: 'center',
+    flexShrink: 0,
+  };
 }
 
 export default SummaryCards;
